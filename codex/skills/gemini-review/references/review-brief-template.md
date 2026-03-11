@@ -19,6 +19,10 @@ Short description of what changed and why.
 - /absolute/path/to/file2
 - /absolute/path/to/changed-directory
 
+## Relevant Modules Or Directories
+
+- Optional. Add sibling modules, shared packages, or architecture touchpoints when this is an important checkpoint and Gemini should do a broader structural review.
+
 ## Diff Stat
 
 Paste a compact diff stat or a short summary.
@@ -32,6 +36,7 @@ Optional. Paste only the few hunks or snippets that matter most when local path 
 - Untested branch
 - Assumption not yet validated
 - Cleanup or simplification not attempted yet
+- Structural review context may still be incomplete
 ```
 
 Keep the brief targeted. Gemini should review a representative change set through local paths, not a whole repository dump pasted into the prompt.

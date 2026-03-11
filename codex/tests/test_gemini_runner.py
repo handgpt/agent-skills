@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -186,6 +187,47 @@ class GeminiRunnerTests(unittest.TestCase):
                 "completed successfully",
             )
         )
+
+    def test_run_advisory_accepts_parser_extension_and_output_contract_builder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir)
+            brief_path = project_root / "brief.md"
+            brief_path.write_text("brief", encoding="utf-8")
+            staged_brief = project_root / "staged-brief.md"
+            staged_brief.write_text("staged", encoding="utf-8")
+
+            def configure_parser(parser: argparse.ArgumentParser) -> None:
+                parser.add_argument("--mode", choices=("standard", "structural"), default="standard")
+
+            def build_prompt(
+                project_root: Path,
+                brief_path: Path,
+                context_entries: list[str],
+                *,
+                role_line: str,
+                output_contract: str,
+            ) -> str:
+                self.assertEqual(output_contract, "MODE=structural")
+                return "assembled prompt"
+
+            with mock.patch("gemini_runner.detect_project_root", return_value=project_root), mock.patch(
+                "gemini_runner.bridge_root_for_project", return_value=project_root / ".bridge"
+            ), mock.patch("gemini_runner.stage_brief_file", return_value=staged_brief), mock.patch(
+                "gemini_runner.describe_paths", return_value=[]
+            ), mock.patch("gemini_runner.build_prompt", side_effect=build_prompt), mock.patch(
+                "gemini_runner.run_gemini",
+                return_value=mock.Mock(returncode=0, stdout="ok", stderr=""),
+            ):
+                exit_code = gemini_runner.run_advisory(
+                    description="review",
+                    role_line="role",
+                    label="review",
+                    configure_parser=configure_parser,
+                    output_contract_builder=lambda args: f"MODE={args.mode}",
+                    argv=["--brief-file", str(brief_path), "--mode", "structural"],
+                )
+
+            self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

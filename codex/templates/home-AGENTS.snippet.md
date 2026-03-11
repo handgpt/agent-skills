@@ -2,6 +2,7 @@
 
 - Codex must invoke `$gemini-design-checkpoint` automatically before finalizing any major technical design decision such as architecture, protocol, repository layout, migration, rollout shape, runtime choice, or security boundary. The user does not need to request this explicitly.
 - Codex must invoke `$gemini-review` automatically after meaningful code changes are complete and before the final response when a non-trivial diff exists. The user does not need to request this explicitly.
+- If the completed change set touches shared or core modules, public interfaces, dependency wiring, top-level project configuration, repo-wide conventions, or multiple sibling modules, Codex must run `$gemini-review` in structural mode. In this mode Gemini should inspect the changed files plus the surrounding modules and directories for code structure and module-boundary risks.
 - Treat both skills as advisory only. Gemini must not modify files, apply patches, or become the final decision-maker.
 - Skip both skills for trivial edits, low-risk tweaks, docs-only wording changes, or analysis-only turns with no code changes.
 - Run at most one Gemini advisory pass per design checkpoint and one Gemini advisory pass per completed change set unless the first pass is clearly unusable.

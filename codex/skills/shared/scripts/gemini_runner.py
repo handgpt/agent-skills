@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -336,8 +337,10 @@ def run_advisory(
     *,
     description: str,
     role_line: str,
-    output_contract: str,
     label: str,
+    output_contract: str | None = None,
+    output_contract_builder: Callable[[argparse.Namespace], str] | None = None,
+    configure_parser: Callable[[argparse.ArgumentParser], None] | None = None,
     argv: list[str] | None = None,
 ) -> int:
     """Run a Gemini advisory pass end-to-end and return an exit code.
@@ -348,14 +351,23 @@ def run_advisory(
         One-line parser description shown in ``--help``.
     role_line : str
         First line of the assembled prompt (sets the reviewer role).
-    output_contract : str
-        The Markdown template + rules Gemini must follow in its response.
     label : str
         Human label used in error messages, e.g. ``"design checkpoint"`` or ``"review"``.
+    output_contract : str | None
+        Fixed Markdown template + rules Gemini must follow in its response.
+    output_contract_builder : Callable[[argparse.Namespace], str] | None
+        Optional callback used when the output contract depends on parsed arguments.
+    configure_parser : Callable[[argparse.ArgumentParser], None] | None
+        Optional callback for adding extra CLI arguments before parsing.
     argv : list[str] | None
         Override for ``sys.argv[1:]``; mainly useful for testing.
     """
+    if (output_contract is None) == (output_contract_builder is None):
+        raise ValueError("Provide exactly one of output_contract or output_contract_builder.")
+
     parser = make_arg_parser(description)
+    if configure_parser is not None:
+        configure_parser(parser)
     args = parser.parse_args(argv)
 
     brief_path = Path(args.brief_file).expanduser().resolve()
@@ -368,12 +380,15 @@ def run_advisory(
     staged_brief = stage_brief_file(brief_path, bridge_root)
     context_entries = describe_paths(args.context_file, project_root, bridge_root)
 
+    resolved_output_contract = output_contract_builder(args) if output_contract_builder else output_contract
+    assert resolved_output_contract is not None
+
     prompt = build_prompt(
         project_root,
         staged_brief,
         context_entries,
         role_line=role_line,
-        output_contract=output_contract,
+        output_contract=resolved_output_contract,
     )
 
     try:
