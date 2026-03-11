@@ -11,6 +11,7 @@ This directory is the Codex-specific product line inside the larger
 agent-skills/codex/
 ├── skills/
 │   ├── gemini-design-checkpoint/
+│   ├── gemini-error-analysis/
 │   ├── gemini-review/
 │   └── shared/
 ├── templates/
@@ -25,6 +26,8 @@ agent-skills/codex/
 
 - `gemini-design-checkpoint`
   Use before major technical design decisions. The skill asks Gemini for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices.
+- `gemini-error-analysis`
+  Use when Codex is stuck on a non-trivial failure after an initial local inspection. The skill asks Gemini to reason about likely causes, separate code logic from environmental issues, and suggest the highest-signal next checks.
 - `gemini-review`
   Use after meaningful code changes and before the final response. The skill asks Gemini for a concise advisory review focused on bugs, regressions, missing tests, risky assumptions, unused code, and safe simplification opportunities. At important checkpoints it also supports a structural mode that inspects code structure, module boundaries, and cross-module design risks.
 

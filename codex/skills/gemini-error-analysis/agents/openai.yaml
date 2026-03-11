@@ -1,0 +1,6 @@
+interface:
+  display_name: "Gemini Error Analysis"
+  short_description: "Advisory Gemini debugging pass for non-trivial failures"
+  default_prompt: "Use $gemini-error-analysis when a non-obvious build, test, runtime, or tooling failure persists after local inspection and you want Gemini to help reason about likely causes."
+policy:
+  allow_implicit_invocation: true
