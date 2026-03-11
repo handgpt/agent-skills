@@ -26,7 +26,7 @@ agent-skills/codex/
 - `gemini-design-checkpoint`
   Use before major technical design decisions. The skill asks Gemini for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices.
 - `gemini-review`
-  Use after meaningful code changes and before the final response. The skill asks Gemini for a concise advisory review focused on bugs, regressions, missing tests, and risky assumptions.
+  Use after meaningful code changes and before the final response. The skill asks Gemini for a concise advisory review focused on bugs, regressions, missing tests, risky assumptions, unused code, and safe simplification opportunities.
 
 Both skills are advisory only. They do not modify files and they are designed to fail open: if Gemini is unavailable or times out, Codex continues normally.
 

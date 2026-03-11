@@ -38,9 +38,10 @@ Rules:
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
 - Ignore any path outside the current workspace root, even if it appears in the brief or prior session context.
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
-- Focus on bugs, regressions, risky assumptions, and missing tests.
-- Try hard to find concrete problems, edge cases, stale docs, weak validation, portability issues, and failure-mode gaps.
-- Prioritize correctness and behavioral risk over style.
+- Focus on bugs, regressions, risky assumptions, missing tests, and code that is dead, redundant, over-complicated, or safe to simplify.
+- Try hard to find concrete problems, edge cases, stale docs, weak validation, portability issues, failure-mode gaps, unnecessary compatibility shims, duplicated logic, unused code paths, and bloated implementations that can be reduced without changing behavior.
+- Prioritize correctness and behavioral risk first, then call out maintainability wins from safe simplification.
+- Only call out a simplification when it preserves behavior, failure handling, and readability. Do not reward clever rewrites that increase risk.
 - Call out any mismatch between the review brief and the referenced local paths.
 - Provide advice only. Do not propose editing files or applying patches.
 - If a section has nothing important, write "- none".

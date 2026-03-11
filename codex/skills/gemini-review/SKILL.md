@@ -1,6 +1,6 @@
 ---
 name: gemini-review
-description: Advisory Gemini CLI code review for completed code changes. Use when Codex has already modified code and wants a concise external review focused on bugs, regressions, missing tests, risky assumptions, or overlooked edge cases before the final response. Use only after meaningful code changes or non-trivial diffs. Do not use for design-only conversations, trivial edits, or when no code was changed.
+description: Advisory Gemini CLI code review for completed code changes. Use when Codex has already modified code and wants a concise external review focused on bugs, regressions, missing tests, risky assumptions, overlooked edge cases, unused code, or over-complicated implementations before the final response. Use only after meaningful code changes or non-trivial diffs. Do not use for design-only conversations, trivial edits, or when no code was changed.
 ---
 
 # Gemini Review
@@ -56,6 +56,7 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 - Treat Gemini as another reviewer, not the source of truth.
 - Validate any claim against the actual diff before acting on it.
 - Review only workspace-local files and directories. Ignore any path outside the current project root, even if it appears in the brief or prior thread context.
+- Ask Gemini to look not only for behavioral bugs, but also for dead code, stale compatibility branches, duplicated logic, and implementation bloat that can be safely simplified.
 - Once the advisory process has started, treat the full configured timeout as normal waiting time. With the default configuration, allow Gemini up to 20 minutes before treating the run as timed out.
 - If the Gemini process is still running but has not produced output yet, keep waiting. Do not restart it, request escalation, or assume failure solely because the run is slow.
 - If Gemini is unavailable, times out, or returns noise, continue and note that the external review pass was unavailable.
@@ -66,6 +67,8 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 - Do not use this skill before code exists; use a design checkpoint instead if the task is still architectural.
 - Keep the review bounded and concise; one pass is usually enough.
 - Prefer changed-file and directory paths over huge prompt bodies. Add excerpts only when path-based inspection would miss important context.
+- Prefer concrete simplification opportunities over vague style commentary. Only call out removable code or complexity when the reasoning is specific and safe.
+- Treat "safe simplification" narrowly: preserved behavior, preserved failure handling, and clearer code. Reject clever rewrites that merely compress lines.
 
 ## Resources
 

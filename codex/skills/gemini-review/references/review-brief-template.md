@@ -11,6 +11,7 @@ Short description of what changed and why.
 
 - What could regress?
 - What is most likely to be wrong?
+- Is there dead code, stale compatibility logic, duplication, or obvious implementation bloat worth questioning?
 
 ## Files Changed
 
@@ -30,6 +31,7 @@ Optional. Paste only the few hunks or snippets that matter most when local path 
 
 - Untested branch
 - Assumption not yet validated
+- Cleanup or simplification not attempted yet
 ```
 
 Keep the brief targeted. Gemini should review a representative change set through local paths, not a whole repository dump pasted into the prompt.
