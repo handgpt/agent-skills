@@ -1,56 +1,63 @@
-# Codex Skills
+# Agent Skills
 
-Reusable Codex skills and install helpers for Gemini-based advisory checkpoints.
+`agent-skills` is a public repository for reusable local-agent skills, prompts,
+install helpers, and runtime-specific workflow assets.
 
-## Layout
+The repository is organized by runtime. Each top-level directory is treated as an
+independent product line with its own documentation, installation flow, and
+release cadence.
+
+## Repository Structure
 
 ```text
-codex-skills/
-├── skills/
-│   ├── gemini-design-checkpoint/
-│   └── gemini-review/
-├── templates/
-│   └── home-AGENTS.snippet.md
-└── scripts/
-    └── install.sh
+agent-skills/
+├── codex/
+│   ├── README.md
+│   ├── skills/
+│   ├── scripts/
+│   ├── templates/
+│   └── tests/
+├── gemini-cli/
+│   ├── README.md
+│   └── scripts/
+├── claude-code/
+│   ├── README.md
+│   └── scripts/
+└── openclaw/
+    ├── README.md
+    └── scripts/
 ```
 
-## Included skills
+## Design Principles
 
-- `gemini-design-checkpoint`
-  Use before major technical design decisions. The skill asks Gemini for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices.
-- `gemini-review`
-  Use after meaningful code changes and before the final response. The skill asks Gemini for a concise advisory review focused on bugs, regressions, missing tests, and risky assumptions.
+- Keep each runtime self-contained. A user should be able to work only inside the
+  runtime directory they need.
+- Avoid a top-level shared library until a real cross-runtime maintenance burden
+  exists. Small, stable helpers are cheaper to duplicate than to couple.
+- Give each runtime its own `README.md` and `scripts/install.sh`.
+- Let runtimes evolve independently. Stability for one runtime should not depend on
+  unfinished work in another.
 
-Both skills are advisory only. They do not modify files and they are designed to fail open: if Gemini is unavailable or times out, Codex continues normally.
+## Current Runtime Status
 
-When the matching `AGENTS.md` rules are installed, Codex should run these advisory passes automatically at the relevant checkpoints. The user does not need to explicitly request Gemini on each turn.
+| Runtime | Status | Notes |
+| --- | --- | --- |
+| [codex](codex/README.md) | Available | Gemini advisory checkpoint and review skills are implemented. |
+| [gemini-cli](gemini-cli/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
+| [claude-code](claude-code/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
+| [openclaw](openclaw/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
 
-The wrappers pass local file and directory paths to Gemini so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
+## How To Use This Repository
 
-They also run Gemini from the current project root, reuse the latest Gemini session for that project when available, stage advisory briefs into a hidden directory under the project root, prune stale staged brief files automatically, and restrict Gemini review context to workspace-local files and directories only.
+1. Open the runtime directory you care about.
+2. Read that runtime's `README.md`.
+3. Use that runtime's install script and conventions only.
 
-Projects that use Git should ignore `.codex-gemini-advisories/`.
-
-Codex should treat the full Gemini wrapper timeout window as expected runtime. With the current defaults, a Gemini advisory run may stay quiet for up to 20 minutes without that implying failure.
-
-## Install
-
-Install the skills into `~/.codex/skills`:
-
-```bash
-./scripts/install.sh
-```
-
-Install the skills and append the home-level AGENTS rules under `~/AGENTS.md`:
-
-```bash
-./scripts/install.sh --install-home-agents
-```
+There is no repository-wide installer on purpose. Installation and configuration
+are runtime-specific.
 
 ## Notes
 
-- `skills/` is the source of truth for Git sharing.
-- `~/.codex/skills` is the runtime install location used by Codex.
-- The home-level `AGENTS.md` rules only apply to projects started under your home directory tree.
-- Restart Codex after installing or updating skills so the runtime skill list refreshes.
+- This repository is intended to be public and readable without private context.
+- Placeholder runtime directories are included to reserve stable paths for future
+  additions, not to imply current support.

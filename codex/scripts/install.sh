@@ -8,6 +8,7 @@ TEMPLATE_SRC="${REPO_ROOT}/templates/home-AGENTS.snippet.md"
 CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
 SKILLS_DEST="${CODEX_HOME_DIR}/skills"
 HOME_AGENTS="${HOME}/AGENTS.md"
+# Keep the legacy marker names so an upgraded install replaces the older block cleanly.
 MARKER_START="# >>> codex-skills gemini advisory >>>"
 MARKER_END="# <<< codex-skills gemini advisory <<<"
 INSTALL_HOME_AGENTS="false"
