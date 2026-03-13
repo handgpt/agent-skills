@@ -12,3 +12,10 @@
 - Codex should silently absorb the Gemini output into its own reasoning and continue the normal workflow. Do not ask the user whether to run Gemini and do not dump the raw advisory text unless the user asks for it.
 - If Gemini returns actionable risks, Codex should decide whether to adapt the plan, revise the implementation, or explain why the suggestion was rejected.
 - If Gemini is unavailable, times out, or returns low-signal output, continue normally and mention that the advisory pass was unavailable only when it materially affects confidence or the user asks about the process.
+
+## Local memory checkpoints
+
+- If the project-root `.codex-pitfalls.md` exists, Codex should read it at the start of non-trivial implementation work and at the start of final review work, before producing new code or review conclusions.
+- After a non-trivial error, regression, or blocker is successfully fixed, Codex should invoke `$pitfall-notebook` to record a concise pitfall entry.
+- Pitfall entries must stay short and concrete: title, symptom, cause, and rule. Do not dump logs or long retrospectives into the notebook.
+- Skip notebook updates for trivial typos, obvious one-step mistakes, or noisy low-signal incidents.

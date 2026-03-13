@@ -42,7 +42,7 @@ agent-skills/
 
 | Runtime | Status | Notes |
 | --- | --- | --- |
-| [codex](codex/README.md) | Available | Gemini advisory checkpoint and review skills are implemented. |
+| [codex](codex/README.md) | Available | Gemini design, review, error-analysis, and pitfall-notebook skills are implemented. |
 | [gemini-cli](gemini-cli/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
 | [claude-code](claude-code/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
 | [openclaw](openclaw/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |

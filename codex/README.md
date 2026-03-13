@@ -13,11 +13,13 @@ agent-skills/codex/
 │   ├── gemini-design-checkpoint/
 │   ├── gemini-error-analysis/
 │   ├── gemini-review/
+│   ├── pitfall-notebook/
 │   └── shared/
 ├── templates/
 │   └── home-AGENTS.snippet.md
 ├── tests/
-│   └── test_gemini_runner.py
+│   ├── test_gemini_runner.py
+│   └── test_pitfall_notebook.py
 └── scripts/
     └── install.sh
 ```
@@ -28,10 +30,14 @@ agent-skills/codex/
   Use before major technical design decisions. The skill asks Gemini for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices.
 - `gemini-error-analysis`
   Use when Codex is stuck on a non-trivial failure after an initial local inspection. The skill asks Gemini to reason about likely causes, separate code logic from environmental issues, and suggest the highest-signal next checks.
+- `pitfall-notebook`
+  Use to maintain a concise per-project markdown notebook of previously fixed pitfalls. Codex should read it before non-trivial implementation or review work and update it after successfully fixing a meaningful blocker.
 - `gemini-review`
   Use after meaningful code changes and before the final response. The skill asks Gemini for a concise advisory review focused on bugs, regressions, missing tests, risky assumptions, unused code, and safe simplification opportunities. At important checkpoints it also supports a structural mode that inspects code structure, module boundaries, and cross-module design risks.
 
-Both skills are advisory only. They do not modify files and they are designed to fail open: if Gemini is unavailable or times out, Codex continues normally.
+The Gemini skills are advisory only. They do not modify files and they are designed to fail open: if Gemini is unavailable or times out, Codex continues normally.
+
+`pitfall-notebook` is intentionally different: it updates a project-local `.codex-pitfalls.md` memory file after a meaningful error is successfully fixed.
 
 When the matching `AGENTS.md` rules are installed, Codex should run these advisory passes automatically at the relevant checkpoints. The user does not need to explicitly request Gemini on each turn.
 
@@ -39,7 +45,7 @@ The wrappers pass local file and directory paths to Gemini so it can inspect the
 
 They also run Gemini from the current project root, reuse the latest Gemini session for that project when available, stage advisory briefs into a hidden directory under the project root, prune stale staged brief files automatically, and restrict Gemini review context to workspace-local files and directories only.
 
-Projects that use Git should ignore `.codex-gemini-advisories/`.
+Projects that use Git should ignore `.codex-gemini-advisories/`. If the pitfall notebook is personal agent memory rather than shared team knowledge, they should also ignore `.codex-pitfalls.md`.
 
 Codex should treat the full Gemini wrapper timeout window as expected runtime. With the current defaults, a Gemini advisory run may stay quiet for up to 20 minutes without that implying failure.
 
@@ -66,8 +72,8 @@ Install the skills and append the home-level AGENTS rules under `~/AGENTS.md`:
 ## Development Notes
 
 - `skills/` contains the Codex runtime source of truth.
-- `tests/test_gemini_runner.py` provides focused coverage for the shared Gemini
-  runner helpers.
+- `tests/` provides focused coverage for the shared Gemini runner helpers and the
+  pitfall notebook updater.
 - `scripts/install.sh` is the supported way to install or refresh the Codex
   runtime assets locally.
 - The install script intentionally preserves the legacy home-level marker names

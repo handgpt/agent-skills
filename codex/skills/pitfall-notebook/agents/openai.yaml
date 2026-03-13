@@ -1,0 +1,6 @@
+interface:
+  display_name: "Pitfall Notebook"
+  short_description: "Keep a concise per-project notebook of fixed pitfalls"
+  default_prompt: "Use $pitfall-notebook after a non-trivial error is fixed so Codex records the core pitfall and avoids repeating it later."
+policy:
+  allow_implicit_invocation: true
