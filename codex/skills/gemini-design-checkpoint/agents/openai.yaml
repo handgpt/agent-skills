@@ -1,6 +1,6 @@
 interface:
   display_name: "Gemini Design Checkpoint"
   short_description: "Advisory Gemini critique for major design decisions"
-  default_prompt: "Use $gemini-design-checkpoint to get a concise Gemini second opinion before a major technical decision."
+  default_prompt: "Use $gemini-design-checkpoint to get a concise Gemini second opinion before a major technical decision, with explicit best-practice checks grounded in official docs and community experience."
 policy:
   allow_implicit_invocation: true

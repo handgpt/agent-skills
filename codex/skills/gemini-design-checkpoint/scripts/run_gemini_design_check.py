@@ -19,10 +19,13 @@ OUTPUT_CONTRACT = """Return Markdown using exactly these sections:
 ## Verdict
 One short paragraph.
 
-## Critical Risks
+## Best-Practice Alignment
 - bullet
 
-## Blind Spots
+## System-Level Risks
+- bullet
+
+## Module-Level Risks
 - bullet
 
 ## Alternatives
@@ -41,13 +44,21 @@ Rules:
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
 - Ignore any path outside the current workspace root, even if it appears in the brief or prior session context.
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
+- Explicitly judge whether the preferred direction follows current best practices; if it deviates, say whether the deviation is justified.
+- Treat a deviation from default best practice as justified only when the stated constraints or operating model clearly outweigh the normal best-practice tradeoffs.
+- Check both the overall architecture and the module-level design. A design is not "best practice" if individual modules look fine but the overall composition, boundaries, or ownership model are poor.
+- When the topic depends on external frameworks, APIs, infrastructure, or standards, consult official documentation and community experience before concluding.
+- Seek disconfirming evidence, not just supporting evidence, from official docs and community practice before endorsing the preferred direction.
+- Distinguish official guidance from community practice when they differ, and say which one drives your recommendation.
 - Try hard to find flaws in the current direction, not just to validate it.
 - Prioritize irreversible mistakes, hidden coupling, migration traps, security boundaries, operational failure modes, and rollback gaps.
+- Prioritize whole-system fit before local module polish.
 - Call out any mismatch between the stated plan and the referenced local paths.
 - Be concise and critical.
 - Provide advice only. Do not propose editing files or applying patches.
 - If a section has nothing important, write "- none".
 - Do not repeat the brief back verbatim.
+- If evidence from official docs or community practice is weak or conflicting, say so explicitly.
 - Do not exceed 300 words unless the brief is unusually complex."""
 
 

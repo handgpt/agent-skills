@@ -27,7 +27,7 @@ agent-skills/codex/
 ## Included skills
 
 - `gemini-design-checkpoint`
-  Use before major technical design decisions. The skill asks Gemini for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices.
+  Use before major technical design decisions. The skill asks Gemini for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices, with explicit best-practice checks across both the whole design and the module boundaries, grounded in official docs and community experience when relevant.
 - `gemini-error-analysis`
   Use when Codex is stuck on a non-trivial failure after an initial local inspection. The skill asks Gemini to reason about likely causes, separate code logic from environmental issues, and suggest the highest-signal next checks.
 - `pitfall-notebook`

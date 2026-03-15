@@ -26,11 +26,20 @@ One-sentence description of the design choice under consideration.
 ## Current Preferred Direction
 
 - State the choice Codex is leaning toward and why.
+- If this direction intentionally deviates from a default best practice, state the constraint or operating tradeoff that is supposed to justify that deviation.
 
 ## Known Risks
 
 - Risk 1
 - Risk 2
+
+## Relevant Official Docs
+
+- https://official-doc.example/path
+
+## Relevant Community References
+
+- https://community-post.example/path
 
 ## Relevant Paths
 
@@ -38,4 +47,4 @@ One-sentence description of the design choice under consideration.
 - /absolute/path/to/design-file
 ```
 
-Keep the brief compact. Prefer summaries plus absolute local paths over whole-file pastes.
+Keep the brief compact. Prefer summaries plus absolute local paths over whole-file pastes. If you already know the official docs or community references that matter, include them here so Gemini can weigh them against the local design context and look for disconfirming evidence instead of only confirming the preferred direction.

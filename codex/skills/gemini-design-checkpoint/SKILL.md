@@ -7,6 +7,8 @@ description: Advisory Gemini CLI second-opinion for high-impact technical design
 
 Get a short, critical second opinion from Gemini before locking in a major technical direction. Treat the result as advisory only: do not let Gemini edit files, apply patches, or override Codex's own judgment.
 
+This checkpoint is not just "spot obvious risks." It should explicitly test whether the preferred direction follows current best practices, whether the overall architecture and the module-level design both make sense, and whether the recommendation is supported by official documentation and real community experience when those sources matter. It should also look for disconfirming evidence, not just supporting evidence, before endorsing the preferred direction.
+
 ## Decide Whether To Use It
 
 - Use this skill for decisions that are expensive to reverse: architecture, protocols, repository boundaries, migrations, deployment shape, trust boundaries, security/privacy design, or large product-level tradeoffs.
@@ -23,9 +25,13 @@ Write a short brief in `/tmp` or another scratch path with these sections:
 - `Options Considered`
 - `Current Preferred Direction`
 - `Known Risks`
+- `Relevant Official Docs` (optional if already known)
+- `Relevant Community References` (optional if already known)
 - `Relevant Paths`
 
 Prefer summaries over raw dumps. If a document is large, summarize it in the brief and point Gemini at the relevant local paths instead of pasting full file bodies.
+
+If you already know the official docs or community references that matter, include them in the brief. If not, Gemini should still try to check official docs and community practice before concluding whenever the decision depends on frameworks, APIs, infrastructure, or standards. If the preferred direction intentionally deviates from a default best practice, make the constraint or operating tradeoff explicit so Gemini can judge whether that deviation is actually justified.
 
 See [design-brief-template.md](references/design-brief-template.md) for a ready-to-fill template.
 
@@ -53,8 +59,10 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 
 ## Read The Output Correctly
 
-- Expect a concise critique with sections for verdict, critical risks, blind spots, alternatives, open questions, and recommendation.
+- Expect a concise critique with sections for verdict, best-practice alignment, system-level risks, module-level risks, alternatives, open questions, and recommendation.
 - Evaluate each point yourself. Accept, reject, or defer it explicitly in your own reasoning.
+- Treat "best practice" as a two-level check: the whole design shape and the module boundaries must both make sense. Local module quality does not rescue a weak overall architecture.
+- When Gemini relies on external guidance, prefer conclusions grounded in official documentation and community experience rather than unsupported intuition.
 - Review only workspace-local files and directories. Ignore any path outside the current project root, even if it appears in the brief or prior thread context.
 - Once the advisory process has started, treat the full configured timeout as normal waiting time. With the default configuration, allow Gemini up to 20 minutes before treating the run as timed out.
 - If the Gemini process is still running but has not produced output yet, keep waiting. Do not restart it, request escalation, or assume failure solely because the run is slow.
