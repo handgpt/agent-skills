@@ -20,6 +20,8 @@ DEFAULT_TIMEOUT_SECONDS = 1200
 MAX_OUTPUT_CHARS = 12000
 MAX_STAGED_BRIEFS = 20
 STAGED_BRIEF_TTL_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_GEMINI_MODEL = "pro"
+GEMINI_MODEL_ENV_VAR = "CODEX_GEMINI_MODEL"
 DEFAULT_GEMINI_FLAGS = ("--sandbox=none",)
 PROMPT_FALLBACK_MARKERS = ("unknown option", "unexpected argument", "unknown argument")
 RESUME_FALLBACK_MARKERS = (
@@ -259,14 +261,18 @@ def _should_retry_command(command: list[str], combined_output: str) -> bool:
     return _should_fallback_resume(command, combined_output) or _should_fallback_prompt(command, combined_output)
 
 
+def configured_gemini_model() -> str:
+    model = os.environ.get(GEMINI_MODEL_ENV_VAR, DEFAULT_GEMINI_MODEL).strip()
+    return model or DEFAULT_GEMINI_MODEL
+
+
 def _candidate_commands(gemini: str, prompt: str, session_id: str) -> list[list[str]]:
     prompt_variants = [["-p", prompt], [prompt]]
+    base_command = [gemini, *DEFAULT_GEMINI_FLAGS, "--model", configured_gemini_model()]
     commands: list[list[str]] = []
     if session_id:
-        commands.extend(
-            [ [gemini, *DEFAULT_GEMINI_FLAGS, "--resume", session_id, *variant] for variant in prompt_variants ]
-        )
-    commands.extend([[gemini, *DEFAULT_GEMINI_FLAGS, *variant] for variant in prompt_variants])
+        commands.extend([[*base_command, "--resume", session_id, *variant] for variant in prompt_variants])
+    commands.extend([[*base_command, *variant] for variant in prompt_variants])
     return commands
 
 

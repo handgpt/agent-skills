@@ -19,6 +19,22 @@ import gemini_runner
 
 
 class GeminiRunnerTests(unittest.TestCase):
+    def test_candidate_commands_default_to_pro_alias(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            commands = gemini_runner._candidate_commands("gemini", "prompt", "session-1")
+
+        self.assertTrue(commands)
+        self.assertIn("--model", commands[0])
+        self.assertIn("pro", commands[0])
+
+    def test_candidate_commands_respect_model_override_env(self) -> None:
+        with mock.patch.dict(os.environ, {gemini_runner.GEMINI_MODEL_ENV_VAR: "gemini-2.5-pro"}, clear=True):
+            commands = gemini_runner._candidate_commands("gemini", "prompt", "")
+
+        self.assertTrue(commands)
+        self.assertIn("--model", commands[0])
+        self.assertIn("gemini-2.5-pro", commands[0])
+
     def test_gemini_projects_returns_empty_mapping_for_invalid_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)

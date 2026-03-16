@@ -45,6 +45,8 @@ The wrappers pass local file and directory paths to Gemini so it can inspect the
 
 They also run Gemini from the current project root, reuse the latest Gemini session for that project when available, stage advisory briefs into a hidden directory under the project root, prune stale staged brief files automatically, and restrict Gemini review context to workspace-local files and directories only.
 
+By default, the shared Gemini runner uses Gemini CLI's stable `pro` alias via `--model pro` so these skills prefer the latest Pro-class model without hard-coding a short-lived version string. Set `CODEX_GEMINI_MODEL` if you need to override that default.
+
 Projects that use Git should ignore `.codex-gemini-advisories/`. If the pitfall notebook is personal agent memory rather than shared team knowledge, they should also ignore `.codex-pitfalls.md`.
 
 Codex should treat the full Gemini wrapper timeout window as expected runtime. With the current defaults, a Gemini advisory run may stay quiet for up to 20 minutes without that implying failure.

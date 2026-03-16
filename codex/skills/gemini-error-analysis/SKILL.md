@@ -53,6 +53,8 @@ Attach only the few source files, config files, or log excerpts that matter to t
 
 The wrapper should run Gemini from the current project root, reuse the latest Gemini session for that project when possible, stage advisory briefs into a hidden directory under the project root, and only pass `--context-file` paths that are already inside the current workspace.
 
+The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
+
 Out-of-workspace `--context-file` paths must be skipped rather than copied into the workspace for Gemini to inspect.
 
 ## Read The Output Correctly
