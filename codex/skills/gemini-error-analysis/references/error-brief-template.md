@@ -36,4 +36,4 @@ Paste only the smallest high-signal excerpt that still shows the failure.
 - What may be environmental rather than code-level
 ```
 
-Keep the brief compact. Gemini should see the real failure signature and the few most relevant files, not a full raw dump of the workspace.
+Keep the brief compact. Gemini should see the real failure signature and the few most relevant files, not a full raw dump of the workspace. The shared runner expands those explicit suspect paths to nearby module directories automatically, so you usually do not need to enumerate every adjacent source file yourself.

@@ -55,6 +55,8 @@ Attach only the key changed files or targeted excerpts that matter to the review
 
 The wrapper should run Gemini from the current project root, reuse the latest Gemini session for that project when possible, stage the brief into a hidden bridge directory under the project root, and only pass `--context-file` paths that are already inside the current workspace.
 
+By default, the shared runner uses expanded-module context: it keeps the explicit review paths and automatically adds a bounded set of nearby parent/module directories so Gemini can inspect siblings and surrounding structure. Use `--strict-paths` only when you need a deliberately surgical pass.
+
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
 Out-of-workspace `--context-file` paths must be skipped rather than copied into the workspace for Gemini to inspect.

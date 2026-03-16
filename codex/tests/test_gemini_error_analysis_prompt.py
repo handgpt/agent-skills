@@ -31,6 +31,7 @@ class GeminiErrorAnalysisPromptTests(unittest.TestCase):
         agent_text = (SKILL_DIR / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertIn("prune the failure locally", skill_text)
+        self.assertIn("expanded-module context", skill_text)
         self.assertIn("Pruned Log Excerpt", template_text)
         self.assertIn("Environment Notes", template_text)
         self.assertIn("non-obvious build, test, runtime, or tooling failure", agent_text)

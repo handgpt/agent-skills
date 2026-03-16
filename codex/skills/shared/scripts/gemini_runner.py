@@ -23,6 +23,29 @@ STAGED_BRIEF_TTL_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_GEMINI_MODEL = "pro"
 GEMINI_MODEL_ENV_VAR = "CODEX_GEMINI_MODEL"
 DEFAULT_GEMINI_FLAGS = ("--sandbox=none",)
+AUTO_EXPAND_FILE_PARENT_LEVELS = 2
+AUTO_EXPAND_DIRECTORY_PARENT_LEVELS = 1
+MAX_AUTO_EXPAND_DIRECTORY_ITEMS = 50
+AUTO_EXPAND_SKIP_NAMES = {
+    ".codex-gemini-advisories",
+    ".git",
+    ".hg",
+    ".idea",
+    ".next",
+    ".nuxt",
+    ".pytest_cache",
+    ".svn",
+    ".turbo",
+    ".venv",
+    ".vscode",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "venv",
+}
 PROMPT_FALLBACK_MARKERS = ("unknown option", "unexpected argument", "unknown argument")
 RESUME_FALLBACK_MARKERS = (
     "unknown option",
@@ -87,6 +110,83 @@ def _workspace_path(raw_path: str, project_root: Path) -> Path | None:
         return None
     path = Path(cleaned).expanduser()
     return path if path.is_absolute() else (project_root / path).absolute()
+
+
+def _append_context_entry(described: list[str], seen: set[Path], path: Path, kind: str) -> None:
+    if path in seen:
+        return
+    seen.add(path)
+    described.append(f"- {path} [{kind}]")
+
+
+def _visible_directory_item_count(directory: Path) -> int | None:
+    count = 0
+    try:
+        for child in directory.iterdir():
+            if child.name.startswith(".") or child.name in AUTO_EXPAND_SKIP_NAMES:
+                continue
+            count += 1
+            if count > MAX_AUTO_EXPAND_DIRECTORY_ITEMS:
+                return count
+    except OSError:
+        return None
+    return count
+
+
+def _can_auto_expand_directory(directory: Path, project_root: Path, bridge_root: Path) -> bool:
+    if not directory.is_dir():
+        return False
+    if directory in (project_root, bridge_root):
+        return False
+    if not _is_within(directory, project_root) or _is_within(directory, bridge_root):
+        return False
+    if directory.name.startswith(".") or directory.name in AUTO_EXPAND_SKIP_NAMES:
+        return False
+    visible_items = _visible_directory_item_count(directory)
+    return visible_items is not None and visible_items <= MAX_AUTO_EXPAND_DIRECTORY_ITEMS
+
+
+def _has_noisy_ancestor(path: Path, project_root: Path, bridge_root: Path) -> bool:
+    current = path.parent
+    while current not in (project_root, bridge_root):
+        if not _is_within(current, project_root):
+            return True
+        if current.name.startswith(".") or current.name in AUTO_EXPAND_SKIP_NAMES:
+            return True
+        current = current.parent
+    return False
+
+
+def _auto_expanded_directories(
+    display_path: Path,
+    resolved_path: Path,
+    project_root: Path,
+    bridge_root: Path,
+) -> list[Path]:
+    if _has_noisy_ancestor(resolved_path, project_root, bridge_root):
+        return []
+
+    if resolved_path.is_file():
+        levels = AUTO_EXPAND_FILE_PARENT_LEVELS
+        display_current = display_path.parent
+        resolved_current = resolved_path.parent
+    elif resolved_path.is_dir():
+        levels = AUTO_EXPAND_DIRECTORY_PARENT_LEVELS
+        display_current = display_path.parent
+        resolved_current = resolved_path.parent
+    else:
+        return []
+
+    expanded: list[Path] = []
+    for _ in range(levels):
+        if resolved_current in (project_root, bridge_root) or not _is_within(resolved_current, project_root):
+            break
+        if not _can_auto_expand_directory(resolved_current, project_root, bridge_root):
+            break
+        expanded.append(display_current)
+        display_current = display_current.parent
+        resolved_current = resolved_current.parent
+    return expanded
 
 
 # ---------------------------------------------------------------------------
@@ -198,10 +298,11 @@ def stage_brief_file(brief_path: Path, bridge_root: Path) -> Path:
     return staged_path
 
 
-def describe_paths(raw_paths: list[str], project_root: Path, bridge_root: Path) -> list[str]:
+def describe_paths(raw_paths: list[str], project_root: Path, bridge_root: Path, *, strict_paths: bool = False) -> list[str]:
     resolved_project_root = project_root.resolve()
     resolved_bridge_root = bridge_root.resolve()
     described: list[str] = []
+    seen: set[Path] = set()
     for raw_path in raw_paths:
         path = _workspace_path(raw_path, resolved_project_root)
         if path is None:
@@ -210,10 +311,14 @@ def describe_paths(raw_paths: list[str], project_root: Path, bridge_root: Path) 
         if _is_within(resolved_path, resolved_bridge_root) or not _is_within(resolved_path, resolved_project_root):
             continue
         if not resolved_path.exists():
-            described.append(f"- {path} [missing]")
+            _append_context_entry(described, seen, path, "missing")
             continue
         kind = "directory" if resolved_path.is_dir() else "file"
-        described.append(f"- {path} [{kind}]")
+        _append_context_entry(described, seen, path, kind)
+        if strict_paths:
+            continue
+        for expanded_directory in _auto_expanded_directories(path, resolved_path, resolved_project_root, resolved_bridge_root):
+            _append_context_entry(described, seen, expanded_directory, "directory, auto-expanded")
     return described
 
 
@@ -332,6 +437,11 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"Subprocess timeout in seconds. Default: {DEFAULT_TIMEOUT_SECONDS}.",
     )
+    parser.add_argument(
+        "--strict-paths",
+        action="store_true",
+        help="Disable automatic expanded-module context and pass only the explicitly listed context paths.",
+    )
     return parser
 
 
@@ -384,7 +494,7 @@ def run_advisory(
     project_root = detect_project_root()
     bridge_root = bridge_root_for_project(project_root)
     staged_brief = stage_brief_file(brief_path, bridge_root)
-    context_entries = describe_paths(args.context_file, project_root, bridge_root)
+    context_entries = describe_paths(args.context_file, project_root, bridge_root, strict_paths=args.strict_paths)
 
     resolved_output_contract = output_contract_builder(args) if output_contract_builder else output_contract
     assert resolved_output_contract is not None

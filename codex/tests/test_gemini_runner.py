@@ -159,6 +159,135 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(entries, [])
 
+    def test_describe_paths_auto_expands_nearby_parent_directories_for_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            feature_dir = project_root / "src" / "feature"
+            feature_dir.mkdir(parents=True)
+            target_file = feature_dir / "service.py"
+            target_file.write_text("print('ok')\n", encoding="utf-8")
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            entries = gemini_runner.describe_paths(
+                [str(target_file)],
+                project_root,
+                bridge_root,
+            )
+
+            self.assertEqual(
+                entries,
+                [
+                    f"- {target_file} [file]",
+                    f"- {feature_dir} [directory, auto-expanded]",
+                    f"- {project_root / 'src'} [directory, auto-expanded]",
+                ],
+            )
+
+    def test_describe_paths_skips_auto_expand_for_large_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            large_dir = project_root / "large-module"
+            large_dir.mkdir(parents=True)
+            target_file = large_dir / "service.py"
+            target_file.write_text("print('ok')\n", encoding="utf-8")
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            for index in range(gemini_runner.MAX_AUTO_EXPAND_DIRECTORY_ITEMS + 1):
+                sibling = large_dir / f"sibling-{index}.py"
+                sibling.write_text("pass\n", encoding="utf-8")
+
+            entries = gemini_runner.describe_paths(
+                [str(target_file)],
+                project_root,
+                bridge_root,
+            )
+
+            self.assertEqual(entries, [f"- {target_file} [file]"])
+
+    def test_describe_paths_does_not_expand_grandparent_after_large_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            large_dir = project_root / "src" / "large-module"
+            large_dir.mkdir(parents=True)
+            target_file = large_dir / "service.py"
+            target_file.write_text("print('ok')\n", encoding="utf-8")
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            for index in range(gemini_runner.MAX_AUTO_EXPAND_DIRECTORY_ITEMS + 1):
+                sibling = large_dir / f"sibling-{index}.py"
+                sibling.write_text("pass\n", encoding="utf-8")
+
+            entries = gemini_runner.describe_paths(
+                [str(target_file)],
+                project_root,
+                bridge_root,
+            )
+
+            self.assertEqual(entries, [f"- {target_file} [file]"])
+
+    def test_describe_paths_ignores_hidden_children_in_expansion_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            feature_dir = project_root / "src" / "feature"
+            feature_dir.mkdir(parents=True)
+            target_file = feature_dir / "service.py"
+            target_file.write_text("print('ok')\n", encoding="utf-8")
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            for index in range(gemini_runner.MAX_AUTO_EXPAND_DIRECTORY_ITEMS + 10):
+                hidden_child = feature_dir / f".hidden-{index}"
+                hidden_child.write_text("ignored\n", encoding="utf-8")
+
+            entries = gemini_runner.describe_paths(
+                [str(target_file)],
+                project_root,
+                bridge_root,
+            )
+
+            self.assertEqual(
+                entries,
+                [
+                    f"- {target_file} [file]",
+                    f"- {feature_dir} [directory, auto-expanded]",
+                    f"- {project_root / 'src'} [directory, auto-expanded]",
+                ],
+            )
+
+    def test_describe_paths_can_disable_auto_expand(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            feature_dir = project_root / "src" / "feature"
+            feature_dir.mkdir(parents=True)
+            target_file = feature_dir / "service.py"
+            target_file.write_text("print('ok')\n", encoding="utf-8")
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            entries = gemini_runner.describe_paths(
+                [str(target_file)],
+                project_root,
+                bridge_root,
+                strict_paths=True,
+            )
+
+            self.assertEqual(entries, [f"- {target_file} [file]"])
+
+    def test_describe_paths_skips_auto_expand_for_noisy_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            noisy_dir = project_root / "node_modules" / "left-pad"
+            noisy_dir.mkdir(parents=True)
+            target_file = noisy_dir / "index.js"
+            target_file.write_text("module.exports = {};\n", encoding="utf-8")
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            entries = gemini_runner.describe_paths(
+                [str(target_file)],
+                project_root,
+                bridge_root,
+            )
+
+            self.assertEqual(entries, [f"- {target_file} [file]"])
+
     def test_describe_paths_skips_symlink_to_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

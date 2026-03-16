@@ -39,4 +39,4 @@ Optional. Paste only the few hunks or snippets that matter most when local path 
 - Structural review context may still be incomplete
 ```
 
-Keep the brief targeted. Gemini should review a representative change set through local paths, not a whole repository dump pasted into the prompt.
+Keep the brief targeted. Gemini should review a representative change set through local paths, not a whole repository dump pasted into the prompt. The shared runner expands those explicit paths to nearby module directories automatically, so you usually do not need to list every sibling file by hand.

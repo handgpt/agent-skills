@@ -37,6 +37,7 @@ class GeminiReviewPromptTests(unittest.TestCase):
         template_text = (REVIEW_DIR / "references" / "review-brief-template.md").read_text(encoding="utf-8")
 
         self.assertIn("dead code", skill_text)
+        self.assertIn("expanded-module context", skill_text)
         self.assertIn("structural mode", skill_text)
         self.assertIn("implementation bloat", skill_text)
         self.assertIn("structural mode", agent_text)

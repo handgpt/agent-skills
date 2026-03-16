@@ -47,4 +47,4 @@ One-sentence description of the design choice under consideration.
 - /absolute/path/to/design-file
 ```
 
-Keep the brief compact. Prefer summaries plus absolute local paths over whole-file pastes. If you already know the official docs or community references that matter, include them here so Gemini can weigh them against the local design context and look for disconfirming evidence instead of only confirming the preferred direction.
+Keep the brief compact. Prefer summaries plus absolute local paths over whole-file pastes. If you already know the official docs or community references that matter, include them here so Gemini can weigh them against the local design context and look for disconfirming evidence instead of only confirming the preferred direction. The shared runner expands those explicit local paths to nearby module directories automatically, so you usually only need to name the core design docs and source touchpoints.
