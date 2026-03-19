@@ -45,13 +45,13 @@ python3 scripts/run_gemini_design_check.py \
   --context-file path/to/doc-or-spec.md
 ```
 
-Add `--context-file` only for the few files or directories Gemini actually needs. Keep the advisory pass compact and bounded.
+Add `--context-file` only for the few files or directories Gemini should treat as priority starting points. Gemini now runs from the project root and may inspect other workspace-local files on its own when needed.
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should tell Gemini to inspect those paths directly on disk instead of inlining their contents into the prompt.
 
-The wrapper should run Gemini from the current project root, reuse the latest Gemini session for that project when possible, stage the brief into a hidden bridge directory under the project root, and only pass `--context-file` paths that are already inside the current workspace.
+The wrapper should launch Gemini from the current project root with `gemini -i`, submit the staged instruction file via explicit `@path` inclusion, reuse the latest Gemini session for that project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, stage the brief into a hidden bridge directory under the project root, and only pass workspace-local `--context-file` paths as hints.
 
-By default, the shared runner uses expanded-module context: it keeps the explicit design docs and source paths, then automatically adds a bounded set of nearby parent/module directories so Gemini can inspect surrounding structure instead of isolated files. Use `--strict-paths` only when you need a narrowly scoped pass.
+`--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
@@ -81,5 +81,5 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 
 ## Resources
 
-- `scripts/run_gemini_design_check.py` wraps Gemini CLI with timeout handling, project-root execution, per-project session reuse, workspace-only context filtering, and a positional-argument fallback if `-p/--prompt` is unavailable.
+- `scripts/run_gemini_design_check.py` wraps Gemini CLI with `-i` prompt submission, project-root execution, per-project session reuse, session-JSON result/error polling, workspace-root exploration, workspace-only context filtering, and result recovery.
 - [references/design-brief-template.md](references/design-brief-template.md) provides a compact brief template for the advisory pass.

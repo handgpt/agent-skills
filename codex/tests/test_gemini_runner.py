@@ -19,21 +19,34 @@ import gemini_runner
 
 
 class GeminiRunnerTests(unittest.TestCase):
-    def test_candidate_commands_default_to_pro_alias(self) -> None:
+    def test_interactive_command_defaults_to_pro_alias(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            commands = gemini_runner._candidate_commands("gemini", "prompt", "session-1")
+            command = gemini_runner._interactive_command("gemini", "prompt", "session-1")
 
-        self.assertTrue(commands)
-        self.assertIn("--model", commands[0])
-        self.assertIn("pro", commands[0])
+        self.assertIn("--model", command)
+        self.assertIn("pro", command)
+        self.assertIn("--approval-mode", command)
+        self.assertIn("yolo", command)
+        self.assertIn("--resume", command)
+        self.assertIn("session-1", command)
+        self.assertIn("-i", command)
+        self.assertIn("prompt", command)
 
-    def test_candidate_commands_respect_model_override_env(self) -> None:
+    def test_interactive_command_respects_model_override_env(self) -> None:
         with mock.patch.dict(os.environ, {gemini_runner.GEMINI_MODEL_ENV_VAR: "gemini-2.5-pro"}, clear=True):
-            commands = gemini_runner._candidate_commands("gemini", "prompt", "")
+            command = gemini_runner._interactive_command("gemini", "prompt", "")
 
-        self.assertTrue(commands)
-        self.assertIn("--model", commands[0])
-        self.assertIn("gemini-2.5-pro", commands[0])
+        self.assertIn("--model", command)
+        self.assertIn("gemini-2.5-pro", command)
+        self.assertNotIn("--resume", command)
+
+    def test_gemini_environment_disables_sandbox_for_full_access(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            env = gemini_runner._gemini_environment()
+
+        self.assertEqual(env[gemini_runner.GEMINI_SANDBOX_ENV_VAR], "false")
+        self.assertEqual(env["TERM"], "xterm-256color")
+        self.assertEqual(env["COLORTERM"], "truecolor")
 
     def test_gemini_projects_returns_empty_mapping_for_invalid_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -145,6 +158,30 @@ class GeminiRunnerTests(unittest.TestCase):
                 ],
             )
 
+    def test_describe_paths_uses_workspace_relative_paths_under_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            inside_dir = project_root / "skills"
+            missing_inside = project_root / "missing.txt"
+            inside_dir.mkdir(parents=True)
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                entries = gemini_runner.describe_paths(
+                    [str(inside_dir), str(missing_inside)],
+                    project_root,
+                    bridge_root,
+                )
+
+            self.assertEqual(
+                entries,
+                [
+                    "- skills [directory]",
+                    "- missing.txt [missing]",
+                ],
+            )
+
     def test_describe_paths_ignores_blank_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             project_root = Path(tmp_dir) / "workspace"
@@ -159,125 +196,13 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(entries, [])
 
-    def test_describe_paths_auto_expands_nearby_parent_directories_for_files(self) -> None:
+    def test_describe_paths_keeps_only_explicit_context_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             project_root = Path(tmp_dir) / "workspace"
             feature_dir = project_root / "src" / "feature"
             feature_dir.mkdir(parents=True)
             target_file = feature_dir / "service.py"
             target_file.write_text("print('ok')\n", encoding="utf-8")
-            bridge_root = gemini_runner.bridge_root_for_project(project_root)
-
-            entries = gemini_runner.describe_paths(
-                [str(target_file)],
-                project_root,
-                bridge_root,
-            )
-
-            self.assertEqual(
-                entries,
-                [
-                    f"- {target_file} [file]",
-                    f"- {feature_dir} [directory, auto-expanded]",
-                    f"- {project_root / 'src'} [directory, auto-expanded]",
-                ],
-            )
-
-    def test_describe_paths_skips_auto_expand_for_large_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            large_dir = project_root / "large-module"
-            large_dir.mkdir(parents=True)
-            target_file = large_dir / "service.py"
-            target_file.write_text("print('ok')\n", encoding="utf-8")
-            bridge_root = gemini_runner.bridge_root_for_project(project_root)
-
-            for index in range(gemini_runner.MAX_AUTO_EXPAND_DIRECTORY_ITEMS + 1):
-                sibling = large_dir / f"sibling-{index}.py"
-                sibling.write_text("pass\n", encoding="utf-8")
-
-            entries = gemini_runner.describe_paths(
-                [str(target_file)],
-                project_root,
-                bridge_root,
-            )
-
-            self.assertEqual(entries, [f"- {target_file} [file]"])
-
-    def test_describe_paths_does_not_expand_grandparent_after_large_parent(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            large_dir = project_root / "src" / "large-module"
-            large_dir.mkdir(parents=True)
-            target_file = large_dir / "service.py"
-            target_file.write_text("print('ok')\n", encoding="utf-8")
-            bridge_root = gemini_runner.bridge_root_for_project(project_root)
-
-            for index in range(gemini_runner.MAX_AUTO_EXPAND_DIRECTORY_ITEMS + 1):
-                sibling = large_dir / f"sibling-{index}.py"
-                sibling.write_text("pass\n", encoding="utf-8")
-
-            entries = gemini_runner.describe_paths(
-                [str(target_file)],
-                project_root,
-                bridge_root,
-            )
-
-            self.assertEqual(entries, [f"- {target_file} [file]"])
-
-    def test_describe_paths_ignores_hidden_children_in_expansion_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            feature_dir = project_root / "src" / "feature"
-            feature_dir.mkdir(parents=True)
-            target_file = feature_dir / "service.py"
-            target_file.write_text("print('ok')\n", encoding="utf-8")
-            bridge_root = gemini_runner.bridge_root_for_project(project_root)
-
-            for index in range(gemini_runner.MAX_AUTO_EXPAND_DIRECTORY_ITEMS + 10):
-                hidden_child = feature_dir / f".hidden-{index}"
-                hidden_child.write_text("ignored\n", encoding="utf-8")
-
-            entries = gemini_runner.describe_paths(
-                [str(target_file)],
-                project_root,
-                bridge_root,
-            )
-
-            self.assertEqual(
-                entries,
-                [
-                    f"- {target_file} [file]",
-                    f"- {feature_dir} [directory, auto-expanded]",
-                    f"- {project_root / 'src'} [directory, auto-expanded]",
-                ],
-            )
-
-    def test_describe_paths_can_disable_auto_expand(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            feature_dir = project_root / "src" / "feature"
-            feature_dir.mkdir(parents=True)
-            target_file = feature_dir / "service.py"
-            target_file.write_text("print('ok')\n", encoding="utf-8")
-            bridge_root = gemini_runner.bridge_root_for_project(project_root)
-
-            entries = gemini_runner.describe_paths(
-                [str(target_file)],
-                project_root,
-                bridge_root,
-                strict_paths=True,
-            )
-
-            self.assertEqual(entries, [f"- {target_file} [file]"])
-
-    def test_describe_paths_skips_auto_expand_for_noisy_parent_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            noisy_dir = project_root / "node_modules" / "left-pad"
-            noisy_dir.mkdir(parents=True)
-            target_file = noisy_dir / "index.js"
-            target_file.write_text("module.exports = {};\n", encoding="utf-8")
             bridge_root = gemini_runner.bridge_root_for_project(project_root)
 
             entries = gemini_runner.describe_paths(
@@ -307,31 +232,96 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(entries, [])
 
-    def test_fallback_marker_detection(self) -> None:
+    def test_resume_retry_marker_detection(self) -> None:
         self.assertTrue(
-            gemini_runner._should_fallback_resume(
-                ["gemini", "--resume", "session", "-p", "prompt"],
+            gemini_runner._should_retry_resume(
+                ["gemini", "--resume", "session"],
                 "Error: invalid session",
             )
         )
-        self.assertTrue(
-            gemini_runner._should_fallback_prompt(
-                ["gemini", "-p", "prompt"],
-                "unknown option: -p",
-            )
-        )
         self.assertFalse(
-            gemini_runner._should_fallback_resume(
-                ["gemini", "--resume", "session", "-p", "prompt"],
+            gemini_runner._should_retry_resume(
+                ["gemini", "--resume", "session"],
                 "all good",
             )
         )
         self.assertFalse(
-            gemini_runner._should_fallback_prompt(
-                ["gemini", "-p", "prompt"],
-                "completed successfully",
+            gemini_runner._should_retry_resume(
+                ["gemini"],
+                "invalid session",
             )
         )
+
+    def test_find_run_observation_in_payload_returns_latest_following_gemini_message(self) -> None:
+        chat_path = Path(__file__)
+        payload = {
+            "lastUpdated": "2026-03-19T12:43:35.512Z",
+            "messages": [
+                {"type": "user", "content": [{"text": "ignore"}]},
+                {"type": "gemini", "content": "ignore"},
+                {"type": "user", "content": [{"text": "brief\nmarker-123"}]},
+                {"type": "gemini", "content": "intermediate answer"},
+                {"type": "gemini", "content": "final answer"},
+            ]
+        }
+
+        observation = gemini_runner._find_run_observation_in_payload(payload, "marker-123", chat_path)
+
+        self.assertTrue(observation.submitted)
+        self.assertEqual(observation.response, "final answer")
+        self.assertIsNone(observation.error)
+        self.assertGreater(observation.last_updated, 0)
+
+    def test_find_run_observation_in_payload_returns_api_errors(self) -> None:
+        chat_path = Path(__file__)
+        payload = {
+            "messages": [
+                {"type": "user", "content": [{"text": "brief\nmarker-123"}]},
+                {"type": "error", "content": [{"text": "[API Error: 429 RESOURCE_EXHAUSTED]"}]},
+            ]
+        }
+
+        observation = gemini_runner._find_run_observation_in_payload(payload, "marker-123", chat_path)
+
+        self.assertTrue(observation.submitted)
+        self.assertIsNone(observation.response)
+        self.assertIn("429", observation.error or "")
+
+    def test_build_prompt_hides_home_path_prefixes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            bridge_root = gemini_runner.bridge_root_for_project(project_root)
+            staged_brief = bridge_root / "briefs" / "review.md"
+            staged_brief.parent.mkdir(parents=True, exist_ok=True)
+            staged_brief.write_text("brief", encoding="utf-8")
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                prompt = gemini_runner.build_prompt(
+                    project_root,
+                    staged_brief,
+                    ["- codex/skills/shared/scripts/gemini_runner.py [file]"],
+                    role_line="role",
+                    output_contract="contract",
+                    run_marker="cadv-test",
+                )
+
+            self.assertIn("- ~/workspace", prompt)
+            self.assertIn("- .codex-gemini-advisories/briefs/review.md", prompt)
+            self.assertNotIn(str(home), prompt)
+
+    def test_build_submission_message_uses_at_file_inclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            instruction_path = project_root / ".codex-gemini-advisories" / "i.md"
+            instruction_path.parent.mkdir(parents=True, exist_ok=True)
+            instruction_path.write_text("brief", encoding="utf-8")
+
+            message = gemini_runner.build_submission_message(project_root, instruction_path, "cadv-test")
+
+        self.assertTrue(message.startswith("@.codex-gemini-advisories/i.md"))
+        self.assertIn("Ref cadv-test", message)
+        self.assertNotIn("Read ", message)
 
     def test_run_advisory_accepts_parser_extension_and_output_contract_builder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -351,8 +341,10 @@ class GeminiRunnerTests(unittest.TestCase):
                 *,
                 role_line: str,
                 output_contract: str,
+                run_marker: str,
             ) -> str:
                 self.assertEqual(output_contract, "MODE=structural")
+                self.assertIn(gemini_runner.RUN_MARKER_PREFIX, run_marker)
                 return "assembled prompt"
 
             with mock.patch("gemini_runner.detect_project_root", return_value=project_root), mock.patch(

@@ -35,7 +35,8 @@ class GeminiDesignCheckpointPromptTests(unittest.TestCase):
         agent_text = (SKILL_DIR / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertIn("official documentation and real community experience", skill_text)
-        self.assertIn("expanded-module context", skill_text)
+        self.assertIn("priority starting points", skill_text)
+        self.assertIn("may inspect any other workspace-local files or directories", skill_text)
         self.assertIn("disconfirming evidence", skill_text)
         self.assertIn("Relevant Official Docs", template_text)
         self.assertIn("Relevant Community References", template_text)

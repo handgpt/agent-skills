@@ -43,9 +43,9 @@ When the matching `AGENTS.md` rules are installed, Codex should run these adviso
 
 The wrappers pass local file and directory paths to Gemini so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
 
-They also run Gemini from the current project root, reuse the latest Gemini session for that project when available, stage advisory briefs into a hidden directory under the project root, prune stale staged brief files automatically, and restrict Gemini review context to workspace-local files and directories only.
+They also launch Gemini from the current project root with `gemini -i`, submit a short interactive query that `@`-includes a staged instruction file, prefer the latest Gemini session for that project when available, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, recover final answers from Gemini's local session JSON, stage advisory briefs into a hidden directory under the project root, prune stale staged brief files automatically, and restrict Gemini review context to workspace-local files and directories only.
 
-By default, the shared runner uses an expanded-module context mode: it keeps the explicitly listed files or directories and automatically adds a bounded set of nearby parent/module directories inside the workspace so Gemini can inspect the surrounding code structure. Use `--strict-paths` to opt out and pass only the exact listed paths.
+`--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. Gemini runs from the project root and may inspect other workspace-local files when the brief requires it.
 
 By default, the shared Gemini runner uses Gemini CLI's stable `pro` alias via `--model pro` so these skills prefer the latest Pro-class model without hard-coding a short-lived version string. Set `CODEX_GEMINI_MODEL` if you need to override that default.
 

@@ -51,9 +51,9 @@ Attach only the few source files, config files, or log excerpts that matter to t
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should tell Gemini to inspect those paths directly on disk instead of inlining their contents into the prompt.
 
-The wrapper should run Gemini from the current project root, reuse the latest Gemini session for that project when possible, stage advisory briefs into a hidden directory under the project root, and only pass `--context-file` paths that are already inside the current workspace.
+The wrapper should launch Gemini from the current project root with `gemini -i`, submit the staged instruction file via explicit `@path` inclusion, reuse the latest Gemini session for that project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, stage advisory briefs into a hidden directory under the project root, and only pass workspace-local `--context-file` paths as priority hints.
 
-By default, the shared runner uses expanded-module context: it keeps the explicit suspect files and logs, then automatically adds a bounded set of nearby parent/module directories so Gemini can inspect adjacent code and configs without jumping to a full-repo scan. Use `--strict-paths` only when the debugging pass must stay surgically narrow.
+`--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
@@ -77,5 +77,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared advisory runner.
+- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared `-i` advisory runner plus session-JSON result/error polling.
 - [error-brief-template.md](references/error-brief-template.md) provides a compact diagnostic brief template.

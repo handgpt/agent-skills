@@ -49,13 +49,13 @@ python3 scripts/run_gemini_review.py \
   --context-file path/to/relevant/module-or-directory
 ```
 
-Attach only the key changed files or targeted excerpts that matter to the review.
+Attach only the key changed files or targeted excerpts that matter to the review. Gemini now runs from the workspace root and may inspect additional workspace-local files on its own when needed.
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should tell Gemini to inspect those paths directly on disk instead of inlining their contents into the prompt. Prefer passing changed-file paths over pasting large hunks when local path access is sufficient.
 
-The wrapper should run Gemini from the current project root, reuse the latest Gemini session for that project when possible, stage the brief into a hidden bridge directory under the project root, and only pass `--context-file` paths that are already inside the current workspace.
+The wrapper should launch Gemini from the current project root with `gemini -i`, submit the staged instruction file via explicit `@path` inclusion, reuse the latest Gemini session for that project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, stage the brief into a hidden bridge directory under the project root, and only pass workspace-local `--context-file` paths as priority hints.
 
-By default, the shared runner uses expanded-module context: it keeps the explicit review paths and automatically adds a bounded set of nearby parent/module directories so Gemini can inspect siblings and surrounding structure. Use `--strict-paths` only when you need a deliberately surgical pass.
+`--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
@@ -90,5 +90,5 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 
 ## Resources
 
-- `scripts/run_gemini_review.py` wraps Gemini CLI with timeout handling, project-root execution, per-project session reuse, workspace-only context filtering, and stable review instructions.
+- `scripts/run_gemini_review.py` wraps Gemini CLI with `-i` prompt submission, project-root execution, per-project session reuse, session-JSON result/error polling, workspace-root exploration, workspace-only context filtering, and stable review instructions.
 - [references/review-brief-template.md](references/review-brief-template.md) provides a compact template for review briefs.

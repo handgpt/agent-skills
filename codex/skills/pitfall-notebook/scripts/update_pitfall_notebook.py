@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 DEFAULT_NOTEBOOK_NAME = ".codex-pitfalls.md"
-MAX_ENTRIES = 10
+MAX_ENTRIES = 100
 HEADER = """# Codex Pitfalls
 
 Concise project-specific pitfalls collected after successful fixes.
