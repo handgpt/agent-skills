@@ -367,6 +367,65 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertEqual(reusable, "session-ok")
             self.assertEqual(not_reusable, "")
 
+    def test_saved_reusable_lane_session_id_rejects_new_user_turn_in_new_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-old.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T01:00:00Z",
+                    "messages": [
+                        {
+                            "id": "u1",
+                            "timestamp": "2026-03-20T01:00:00Z",
+                            "type": "user",
+                            "content": "old prompt",
+                        },
+                        {
+                            "id": "g1",
+                            "timestamp": "2026-03-20T01:01:00Z",
+                            "type": "gemini",
+                            "content": "old answer",
+                        },
+                    ],
+                },
+                mtime=2.0,
+            )
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-new.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T03:00:00Z",
+                    "messages": [
+                        {
+                            "id": "u2",
+                            "timestamp": "2026-03-20T03:00:00Z",
+                            "type": "user",
+                            "content": "new prompt",
+                        }
+                    ],
+                },
+                mtime=3.0,
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                gemini_runner._remember_lane_session(project_root, "review", "session-a")
+                reusable = gemini_runner._saved_reusable_lane_session_id(
+                    project_root, "review"
+                )
+
+            self.assertEqual(reusable, "")
+
     def test_session_is_complete_rejects_empty_gemini_tail_without_text(self) -> None:
         conversation = {
             "messages": [
@@ -377,24 +436,116 @@ class GeminiRunnerTests(unittest.TestCase):
 
         self.assertFalse(gemini_runner._session_is_complete(conversation))
 
-    def test_refreshed_resumed_target_resets_baseline_for_new_resume_file(self) -> None:
-        project_root = Path("/workspace")
-        baseline = Path("/tmp/session-old.json")
-        new_target = Path("/tmp/session-new.json")
-
-        with mock.patch(
-            "gemini_runner._latest_session_file_for_id", return_value=new_target
-        ):
-            target, baseline_messages = gemini_runner._refreshed_resumed_target(
-                project_root,
-                "session-a",
-                baseline,
-                baseline,
-                7,
+    def test_merged_session_messages_combines_multiple_files_for_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-old.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T01:00:00Z",
+                    "messages": [
+                        {
+                            "id": "u1",
+                            "timestamp": "2026-03-20T01:00:00Z",
+                            "type": "user",
+                            "content": "old prompt",
+                        },
+                        {
+                            "id": "g1",
+                            "timestamp": "2026-03-20T01:01:00Z",
+                            "type": "gemini",
+                            "content": "old answer",
+                        },
+                    ],
+                },
+                mtime=2.0,
+            )
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-new.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T03:00:00Z",
+                    "messages": [
+                        {
+                            "id": "u2",
+                            "timestamp": "2026-03-20T03:00:00Z",
+                            "type": "user",
+                            "content": "new prompt",
+                        }
+                    ],
+                },
+                mtime=3.0,
             )
 
-        self.assertEqual(target, new_target)
-        self.assertEqual(baseline_messages, 0)
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                messages = gemini_runner._merged_session_messages(
+                    project_root, "session-a"
+                )
+
+            self.assertEqual([message["id"] for message in messages], ["u1", "g1", "u2"])
+
+    def test_merged_session_messages_keeps_latest_version_of_same_message_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-old.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T01:00:00Z",
+                    "messages": [
+                        {
+                            "id": "g1",
+                            "timestamp": "2026-03-20T01:01:00Z",
+                            "type": "gemini",
+                            "content": "",
+                        }
+                    ],
+                },
+                mtime=2.0,
+            )
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-new.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T03:00:00Z",
+                    "messages": [
+                        {
+                            "id": "g1",
+                            "timestamp": "2026-03-20T01:01:00Z",
+                            "type": "gemini",
+                            "content": "final answer",
+                        }
+                    ],
+                },
+                mtime=3.0,
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                messages = gemini_runner._merged_session_messages(
+                    project_root, "session-a"
+                )
+
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["content"], "final answer")
 
     def test_interactive_outcome_returns_success_after_final_gemini_message(self) -> None:
         outcome = gemini_runner._interactive_outcome(

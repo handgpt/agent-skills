@@ -602,12 +602,14 @@ def _is_subagent_conversation(conversation: dict[str, object]) -> bool:
     return str(conversation.get("kind", "")).strip() == "subagent"
 
 
-def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | None:
+def _session_conversations_for_id(
+    project_root: Path, session_id: str
+) -> list[tuple[tuple[float, str], Path, dict[str, object]]]:
     chats_dir = _project_chats_dir(project_root)
     if not chats_dir or not chats_dir.is_dir():
-        return None
+        return []
 
-    matches: list[tuple[tuple[float, str], Path]] = []
+    matches: list[tuple[tuple[float, str], Path, dict[str, object]]] = []
     for path in chats_dir.glob("session-*.json"):
         conversation = _load_conversation(path)
         if not conversation:
@@ -616,11 +618,14 @@ def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | N
             continue
         if str(conversation.get("sessionId", "")).strip() != session_id:
             continue
-        matches.append((_conversation_sort_key(path, conversation), path))
-    if not matches:
-        return None
-    matches.sort(key=lambda item: item[0], reverse=True)
-    return matches[0][1]
+        matches.append((_conversation_sort_key(path, conversation), path, conversation))
+    matches.sort(key=lambda item: item[0])
+    return matches
+
+
+def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | None:
+    matches = _session_conversations_for_id(project_root, session_id)
+    return matches[-1][1] if matches else None
 
 
 def _conversation_messages(conversation: dict[str, object]) -> list[dict[str, object]]:
@@ -653,6 +658,56 @@ def _message_text(message: dict[str, object]) -> str:
     return _extract_text_from_content(message.get("displayContent"))
 
 
+def _message_identity(message: dict[str, object]) -> str:
+    message_id = str(message.get("id", "")).strip()
+    if message_id:
+        return f"id:{message_id}"
+    tool_call_ids: list[str] = []
+    tool_calls = message.get("toolCalls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            tool_call_ids.append(str(tool_call.get("id", "")).strip())
+    fallback = {
+        "timestamp": str(message.get("timestamp", "")).strip(),
+        "type": str(message.get("type", "")).strip(),
+        "text": _message_text(message).strip(),
+        "toolCallIds": tool_call_ids,
+    }
+    return "fallback:" + json.dumps(fallback, ensure_ascii=False, sort_keys=True)
+
+
+def _message_timestamp_sort_value(message: dict[str, object]) -> float:
+    parsed = _parse_iso_timestamp(message.get("timestamp"))
+    if parsed is None:
+        return float("inf")
+    return parsed.timestamp()
+
+
+def _merged_session_messages(project_root: Path, session_id: str) -> list[dict[str, object]]:
+    conversations = _session_conversations_for_id(project_root, session_id)
+    merged_messages: dict[str, dict[str, object]] = {}
+    ordering: dict[str, tuple[float, float, str, int, str]] = {}
+
+    for conversation_sort_key, _path, conversation in conversations:
+        conversation_time = conversation_sort_key[0]
+        conversation_name = conversation_sort_key[1]
+        for index, message in enumerate(_conversation_messages(conversation)):
+            key = _message_identity(message)
+            merged_messages[key] = message
+            ordering[key] = (
+                _message_timestamp_sort_value(message),
+                conversation_time,
+                conversation_name,
+                index,
+                key,
+            )
+
+    ordered_keys = sorted(ordering, key=lambda key: ordering[key])
+    return [merged_messages[key] for key in ordered_keys]
+
+
 def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
     if str(message.get("type", "")).strip() != "gemini":
         return False
@@ -682,30 +737,13 @@ def _saved_reusable_lane_session_id(project_root: Path, lane: str) -> str:
     session_id = _saved_lane_session_id(project_root, lane)
     if not session_id:
         return ""
-    session_file = _latest_session_file_for_id(project_root, session_id)
-    if not session_file:
+    messages = _merged_session_messages(project_root, session_id)
+    if not messages:
         return ""
-    conversation = _load_conversation(session_file)
-    if not conversation or not _session_is_complete(conversation):
+    outcome = _last_turn_outcome(messages)
+    if not outcome or outcome[0] != "success" or not outcome[1].strip():
         return ""
     return session_id
-
-
-def _refreshed_resumed_target(
-    project_root: Path,
-    resumed_session_id: str,
-    target_file: Path | None,
-    baseline_file: Path | None,
-    baseline_messages: int,
-) -> tuple[Path | None, int]:
-    if not resumed_session_id:
-        return (target_file, baseline_messages)
-    candidate = _latest_session_file_for_id(project_root, resumed_session_id)
-    if candidate is None or candidate == target_file:
-        return (target_file, baseline_messages)
-    if candidate == baseline_file:
-        return (candidate, baseline_messages)
-    return (candidate, 0)
 
 
 def _normalized_prompt_text(text: str) -> str:
@@ -885,65 +923,56 @@ def _run_interactive_attempt(
     *,
     resumed_session_id: str,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
-    baseline_file: Path | None = None
-    baseline_messages = 0
+    baseline_message_keys: set[str] = set()
     if resumed_session_id:
-        baseline_file = _latest_session_file_for_id(project_root, resumed_session_id)
-        if baseline_file:
-            conversation = _load_conversation(baseline_file)
-            baseline_messages = len(_conversation_messages(conversation or {}))
+        baseline_message_keys = {
+            _message_identity(message)
+            for message in _merged_session_messages(project_root, resumed_session_id)
+        }
 
     process, master_fd = _launch_interactive_process(command, project_root)
     captured_output = ""
     start_monotonic = time.monotonic()
     start_epoch = time.time()
-    target_file = baseline_file
     last_change = start_monotonic
-    last_mtime: float | None = baseline_file.stat().st_mtime if baseline_file else None
     resolved_session_id = resumed_session_id
     outcome: tuple[str, str] | None = None
+    last_seen_message_keys = frozenset(baseline_message_keys)
 
     try:
         while True:
             captured_output = _drain_pty_output(master_fd, captured_output)
 
-            if resumed_session_id:
-                candidate, candidate_baseline_messages = _refreshed_resumed_target(
-                    project_root,
-                    resumed_session_id,
-                    target_file,
-                    baseline_file,
-                    baseline_messages,
-                )
-                if candidate is not None and candidate != target_file:
-                    target_file = candidate
-                    baseline_messages = candidate_baseline_messages
-                    last_mtime = candidate.stat().st_mtime
-                    last_change = time.monotonic()
-            elif target_file is None:
+            if not resolved_session_id:
                 candidate = _latest_fresh_chat_file_since(
                     project_root, start_epoch, prompt=command[-1]
                 )
                 if candidate is not None:
-                    target_file = candidate
-                    baseline_messages = 0
-                    last_mtime = candidate.stat().st_mtime
-                    last_change = time.monotonic()
+                    conversation = _load_conversation(candidate)
+                    if conversation:
+                        resolved_session_id = str(
+                            conversation.get("sessionId", "")
+                        ).strip()
+                        if resolved_session_id:
+                            last_change = time.monotonic()
 
-            conversation: dict[str, object] | None = None
-            if target_file and target_file.exists():
-                current_mtime = target_file.stat().st_mtime
-                if last_mtime is None or current_mtime != last_mtime:
-                    last_mtime = current_mtime
+            merged_messages: list[dict[str, object]] = []
+            if resolved_session_id:
+                merged_messages = _merged_session_messages(project_root, resolved_session_id)
+                current_message_keys = frozenset(
+                    _message_identity(message) for message in merged_messages
+                )
+                if current_message_keys != last_seen_message_keys:
+                    last_seen_message_keys = current_message_keys
                     last_change = time.monotonic()
-                conversation = _load_conversation(target_file)
-                if conversation:
-                    resolved_session_id = str(
-                        conversation.get("sessionId", resolved_session_id)
-                    ).strip()
-                    messages = _conversation_messages(conversation)
-                    if len(messages) >= baseline_messages:
-                        outcome = _interactive_outcome(messages[baseline_messages:])
+                new_messages = [
+                    message
+                    for message in merged_messages
+                    if _message_identity(message) not in baseline_message_keys
+                ]
+                outcome = _interactive_outcome(new_messages)
+            else:
+                outcome = None
 
             now = time.monotonic()
             if outcome and now - last_change >= INTERACTIVE_STABILITY_SECONDS:
@@ -961,15 +990,14 @@ def _run_interactive_attempt(
 
             if process.poll() is not None:
                 captured_output = _drain_pty_output(master_fd, captured_output)
-                if conversation is None and target_file and target_file.exists():
-                    conversation = _load_conversation(target_file)
-                    if conversation:
-                        resolved_session_id = str(
-                            conversation.get("sessionId", resolved_session_id)
-                        ).strip()
-                        messages = _conversation_messages(conversation)
-                        if len(messages) >= baseline_messages:
-                            outcome = _interactive_outcome(messages[baseline_messages:])
+                if resolved_session_id:
+                    merged_messages = _merged_session_messages(project_root, resolved_session_id)
+                    new_messages = [
+                        message
+                        for message in merged_messages
+                        if _message_identity(message) not in baseline_message_keys
+                    ]
+                    outcome = _interactive_outcome(new_messages)
                 _close_interactive_process(process, master_fd)
                 if outcome and outcome[0] == "success":
                     return (
