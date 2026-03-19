@@ -212,6 +212,34 @@ class GeminiRunnerTests(unittest.TestCase):
             with mock.patch.object(gemini_runner.Path, "home", return_value=home):
                 self.assertEqual(gemini_runner._project_short_id(project_root), "proj-1")
 
+    def test_project_short_id_falls_back_to_marker_when_registry_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            wrong_owner = home / "other-workspace"
+            wrong_owner.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            marker_dir = home / ".gemini" / gemini_runner.GEMINI_TMP_DIRNAME / "proj-1"
+            marker_dir.mkdir(parents=True, exist_ok=True)
+            (marker_dir / gemini_runner.PROJECT_ROOT_MARKER_FILE).write_text(
+                str(wrong_owner.resolve()),
+                encoding="utf-8",
+            )
+            recovered_dir = (
+                home / ".gemini" / gemini_runner.GEMINI_HISTORY_DIRNAME / "workspace"
+            )
+            recovered_dir.mkdir(parents=True, exist_ok=True)
+            (recovered_dir / gemini_runner.PROJECT_ROOT_MARKER_FILE).write_text(
+                str(project_root.resolve()),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                self.assertEqual(
+                    gemini_runner._project_short_id(project_root), "workspace"
+                )
+
     def test_latest_session_file_for_id_prefers_newest_matching_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
@@ -244,6 +272,52 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(selected, newer_path)
             self.assertNotEqual(selected, older_path)
+
+    def test_latest_session_file_for_id_ignores_subagent_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-subagent.json",
+                {
+                    "sessionId": "session-a",
+                    "kind": "subagent",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T03:00:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {"type": "gemini", "content": "subagent"},
+                    ],
+                },
+                mtime=3.0,
+            )
+            main_path = _write_session_file(
+                home,
+                "proj-1",
+                "session-main.json",
+                {
+                    "sessionId": "session-a",
+                    "kind": "main",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T02:00:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {"type": "gemini", "content": "main"},
+                    ],
+                },
+                mtime=2.0,
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                selected = gemini_runner._latest_session_file_for_id(
+                    project_root, "session-a"
+                )
+
+            self.assertEqual(selected, main_path)
 
     def test_saved_reusable_lane_session_id_requires_complete_gemini_tail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -292,6 +366,16 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(reusable, "session-ok")
             self.assertEqual(not_reusable, "")
+
+    def test_session_is_complete_rejects_empty_gemini_tail_without_text(self) -> None:
+        conversation = {
+            "messages": [
+                {"type": "user", "content": "prompt"},
+                {"type": "gemini", "content": ""},
+            ]
+        }
+
+        self.assertFalse(gemini_runner._session_is_complete(conversation))
 
     def test_refreshed_resumed_target_resets_baseline_for_new_resume_file(self) -> None:
         project_root = Path("/workspace")
@@ -342,6 +426,103 @@ class GeminiRunnerTests(unittest.TestCase):
         )
 
         self.assertEqual(outcome, ("error", "429 Too Many Requests"))
+
+    def test_latest_fresh_chat_file_since_prefers_prompt_matching_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            start_epoch = 100.0
+            unrelated_path = _write_session_file(
+                home,
+                "proj-1",
+                "session-unrelated.json",
+                {
+                    "sessionId": "session-other",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T03:00:00Z",
+                    "messages": [
+                        {"type": "user", "content": "different prompt"},
+                        {"type": "gemini", "content": "done"},
+                    ],
+                },
+                mtime=130.0,
+            )
+            matching_path = _write_session_file(
+                home,
+                "proj-1",
+                "session-matching.json",
+                {
+                    "sessionId": "session-target",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T02:00:00Z",
+                    "messages": [
+                        {"type": "user", "content": 'line 1\nline "2"'},
+                        {"type": "gemini", "content": "done"},
+                    ],
+                },
+                mtime=120.0,
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                selected = gemini_runner._latest_fresh_chat_file_since(
+                    project_root,
+                    start_epoch,
+                    'line 1\nline "2"',
+                )
+
+            self.assertEqual(selected, matching_path)
+            self.assertNotEqual(selected, unrelated_path)
+
+    def test_latest_fresh_chat_file_since_ignores_subagent_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            start_epoch = 100.0
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-subagent.json",
+                {
+                    "sessionId": "session-a",
+                    "kind": "subagent",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T03:00:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {"type": "gemini", "content": "subagent"},
+                    ],
+                },
+                mtime=130.0,
+            )
+            main_path = _write_session_file(
+                home,
+                "proj-1",
+                "session-main.json",
+                {
+                    "sessionId": "session-b",
+                    "kind": "main",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T02:00:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {"type": "gemini", "content": "main"},
+                    ],
+                },
+                mtime=120.0,
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                selected = gemini_runner._latest_fresh_chat_file_since(
+                    project_root,
+                    start_epoch,
+                    "prompt",
+                )
+
+            self.assertEqual(selected, main_path)
 
     def test_run_gemini_dispatches_by_runner_mode(self) -> None:
         project_root = Path("/workspace")

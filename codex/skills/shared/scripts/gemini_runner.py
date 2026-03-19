@@ -32,6 +32,8 @@ VALID_GEMINI_RUN_MODES = ("interactive", "headless")
 LANE_SESSION_STATE_FILE = "codex-lane-sessions.json"
 GEMINI_PROJECTS_FILE = "projects.json"
 GEMINI_TMP_DIRNAME = "tmp"
+GEMINI_HISTORY_DIRNAME = "history"
+PROJECT_ROOT_MARKER_FILE = ".project_root"
 INLINE_PROMPT_TOO_LARGE_MESSAGE = (
     "Gemini inline prompt is too large for this platform's command-line limit. "
     "Reduce the brief size or switch to a non-argv prompt delivery path."
@@ -485,6 +487,14 @@ def _project_registry_path() -> Path:
     return Path.home() / ".gemini" / GEMINI_PROJECTS_FILE
 
 
+def _project_registry_base_dirs() -> tuple[Path, ...]:
+    gemini_dir = Path.home() / ".gemini"
+    return (
+        gemini_dir / GEMINI_TMP_DIRNAME,
+        gemini_dir / GEMINI_HISTORY_DIRNAME,
+    )
+
+
 def _load_project_registry() -> dict[str, str]:
     try:
         payload = json.loads(_project_registry_path().read_text(encoding="utf-8"))
@@ -501,8 +511,51 @@ def _normalize_project_path(project_root: Path) -> str:
     return normalized
 
 
+def _verify_slug_ownership(slug: str, normalized_project_root: str) -> bool:
+    for base_dir in _project_registry_base_dirs():
+        marker_path = base_dir / slug / PROJECT_ROOT_MARKER_FILE
+        if not marker_path.is_file():
+            continue
+        try:
+            owner = _normalize_project_path(
+                Path(marker_path.read_text(encoding="utf-8").strip())
+            )
+        except Exception:
+            return False
+        if owner != normalized_project_root:
+            return False
+    return True
+
+
+def _find_slug_by_marker(normalized_project_root: str) -> str:
+    for base_dir in _project_registry_base_dirs():
+        if not base_dir.is_dir():
+            continue
+        try:
+            candidates = sorted(base_dir.iterdir(), key=lambda path: path.name)
+        except Exception:
+            continue
+        for candidate in candidates:
+            marker_path = candidate / PROJECT_ROOT_MARKER_FILE
+            if not marker_path.is_file():
+                continue
+            try:
+                owner = _normalize_project_path(Path(marker_path.read_text(encoding="utf-8").strip()))
+            except Exception:
+                continue
+            if owner == normalized_project_root:
+                return candidate.name
+    return ""
+
+
 def _project_short_id(project_root: Path) -> str:
-    return str(_load_project_registry().get(_normalize_project_path(project_root), "")).strip()
+    normalized_project_root = _normalize_project_path(project_root)
+    registry_slug = str(
+        _load_project_registry().get(normalized_project_root, "")
+    ).strip()
+    if registry_slug and _verify_slug_ownership(registry_slug, normalized_project_root):
+        return registry_slug
+    return _find_slug_by_marker(normalized_project_root)
 
 
 def _project_chats_dir(project_root: Path) -> Path | None:
@@ -545,6 +598,10 @@ def _load_conversation(path: Path) -> dict[str, object] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _is_subagent_conversation(conversation: dict[str, object]) -> bool:
+    return str(conversation.get("kind", "")).strip() == "subagent"
+
+
 def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | None:
     chats_dir = _project_chats_dir(project_root)
     if not chats_dir or not chats_dir.is_dir():
@@ -555,6 +612,8 @@ def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | N
         conversation = _load_conversation(path)
         if not conversation:
             continue
+        if _is_subagent_conversation(conversation):
+            continue
         if str(conversation.get("sessionId", "")).strip() != session_id:
             continue
         matches.append((_conversation_sort_key(path, conversation), path))
@@ -562,20 +621,6 @@ def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | N
         return None
     matches.sort(key=lambda item: item[0], reverse=True)
     return matches[0][1]
-
-
-def _latest_chat_file_since(project_root: Path, start_epoch: float) -> Path | None:
-    chats_dir = _project_chats_dir(project_root)
-    if not chats_dir or not chats_dir.is_dir():
-        return None
-
-    candidates = [
-        path for path in chats_dir.glob("session-*.json") if path.stat().st_mtime >= start_epoch
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    return candidates[0]
 
 
 def _conversation_messages(conversation: dict[str, object]) -> list[dict[str, object]]:
@@ -623,15 +668,14 @@ def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
     return False
 
 
+def _last_turn_outcome(messages: list[dict[str, object]]) -> tuple[str, str] | None:
+    return _interactive_outcome(messages)
+
+
 def _session_is_complete(conversation: dict[str, object]) -> bool:
     messages = _conversation_messages(conversation)
-    if not messages:
-        return False
-    last_message = messages[-1]
-    return (
-        str(last_message.get("type", "")).strip() == "gemini"
-        and not _message_has_active_tool_calls(last_message)
-    )
+    outcome = _last_turn_outcome(messages)
+    return bool(outcome and outcome[0] == "success" and outcome[1].strip())
 
 
 def _saved_reusable_lane_session_id(project_root: Path, lane: str) -> str:
@@ -662,6 +706,63 @@ def _refreshed_resumed_target(
     if candidate == baseline_file:
         return (candidate, baseline_messages)
     return (candidate, 0)
+
+
+def _normalized_prompt_text(text: str) -> str:
+    return text.strip()
+
+
+def _prompt_variants(prompt: str) -> set[str]:
+    variants = {
+        _normalized_prompt_text(prompt),
+        _normalized_prompt_text(_safe_prompt_argument(prompt)),
+    }
+    return {variant for variant in variants if variant}
+
+
+def _conversation_matches_prompt(conversation: dict[str, object], prompt: str) -> bool:
+    prompt_variants = _prompt_variants(prompt)
+    if not prompt_variants:
+        return False
+    for message in _conversation_messages(conversation):
+        if str(message.get("type", "")).strip() != "user":
+            continue
+        if _normalized_prompt_text(_message_text(message)) in prompt_variants:
+            return True
+    return False
+
+
+def _latest_fresh_chat_file_since(
+    project_root: Path, start_epoch: float, prompt: str
+) -> Path | None:
+    chats_dir = _project_chats_dir(project_root)
+    if not chats_dir or not chats_dir.is_dir():
+        return None
+
+    matched: list[tuple[tuple[float, str], Path]] = []
+    start_cutoff = start_epoch - 5.0
+    for path in chats_dir.glob("session-*.json"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < start_cutoff:
+            continue
+        conversation = _load_conversation(path)
+        if not conversation:
+            continue
+        if _is_subagent_conversation(conversation):
+            continue
+        parsed_start = _parse_iso_timestamp(conversation.get("startTime"))
+        if parsed_start is not None and parsed_start.timestamp() < start_cutoff:
+            continue
+        if not _conversation_matches_prompt(conversation, prompt):
+            continue
+        matched.append((_conversation_sort_key(path, conversation), path))
+    if not matched:
+        return None
+    matched.sort(key=lambda item: item[0], reverse=True)
+    return matched[0][1]
 
 
 def _launch_interactive_process(
@@ -820,7 +921,9 @@ def _run_interactive_attempt(
                     last_mtime = candidate.stat().st_mtime
                     last_change = time.monotonic()
             elif target_file is None:
-                candidate = _latest_chat_file_since(project_root, start_epoch)
+                candidate = _latest_fresh_chat_file_since(
+                    project_root, start_epoch, prompt=command[-1]
+                )
                 if candidate is not None:
                     target_file = candidate
                     baseline_messages = 0
