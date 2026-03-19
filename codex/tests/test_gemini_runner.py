@@ -47,6 +47,10 @@ def _write_session_file(
     return path
 
 
+def _session_filename(label: str, session_id: str) -> str:
+    return f"session-{label}-{session_id[:8]}.json"
+
+
 class GeminiRunnerTests(unittest.TestCase):
     def test_noninteractive_command_defaults_to_pro_alias(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -240,6 +244,13 @@ class GeminiRunnerTests(unittest.TestCase):
                     gemini_runner._project_short_id(project_root), "workspace"
                 )
 
+    def test_session_file_glob_targets_session_short_id(self) -> None:
+        self.assertEqual(
+            gemini_runner._session_file_glob("12345678-aaaa-bbbb-cccc-ddddeeeeffff"),
+            "session-*-12345678.json",
+        )
+        self.assertEqual(gemini_runner._session_file_glob(""), "session-*.json")
+
     def test_session_conversations_for_id_sorts_by_conversation_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
@@ -249,7 +260,7 @@ class GeminiRunnerTests(unittest.TestCase):
             older_path = _write_session_file(
                 home,
                 "proj-1",
-                "session-old.json",
+                _session_filename("old", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T01:00:00Z",
@@ -261,7 +272,7 @@ class GeminiRunnerTests(unittest.TestCase):
             newer_path = _write_session_file(
                 home,
                 "proj-1",
-                "session-new.json",
+                _session_filename("new", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T02:00:00Z",
@@ -287,7 +298,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-subagent.json",
+                _session_filename("subagent", "session-a"),
                 {
                     "sessionId": "session-a",
                     "kind": "subagent",
@@ -303,7 +314,7 @@ class GeminiRunnerTests(unittest.TestCase):
             main_path = _write_session_file(
                 home,
                 "proj-1",
-                "session-main.json",
+                _session_filename("main", "session-a"),
                 {
                     "sessionId": "session-a",
                     "kind": "main",
@@ -333,7 +344,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-finished.json",
+                _session_filename("finished", "session-ok"),
                 {
                     "sessionId": "session-ok",
                     "lastUpdated": "2026-03-20T02:00:00Z",
@@ -347,7 +358,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-open.json",
+                _session_filename("open", "session-open"),
                 {
                     "sessionId": "session-open",
                     "lastUpdated": "2026-03-20T03:00:00Z",
@@ -381,7 +392,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-old.json",
+                _session_filename("old", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T02:00:00Z",
@@ -406,7 +417,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-new.json",
+                _session_filename("new", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T03:00:00Z",
@@ -440,7 +451,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-old.json",
+                _session_filename("old", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T02:00:00Z",
@@ -465,7 +476,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-new.json",
+                _session_filename("new", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T03:00:00Z",
@@ -498,7 +509,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-old.json",
+                _session_filename("old", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T02:00:00Z",
@@ -517,7 +528,7 @@ class GeminiRunnerTests(unittest.TestCase):
             _write_session_file(
                 home,
                 "proj-1",
-                "session-new.json",
+                _session_filename("new", "session-a"),
                 {
                     "sessionId": "session-a",
                     "lastUpdated": "2026-03-20T03:00:00Z",
@@ -572,6 +583,24 @@ class GeminiRunnerTests(unittest.TestCase):
         )
 
         self.assertEqual(outcome, ("error", "429 Too Many Requests"))
+
+    def test_interactive_state_summary_reports_user_only_turn(self) -> None:
+        summary = gemini_runner._interactive_state_summary(
+            [{"type": "user", "content": "prompt"}]
+        )
+
+        self.assertIn("only recorded the user message", summary)
+
+    def test_interactive_state_summary_reports_empty_gemini_intermediate_turn(self) -> None:
+        summary = gemini_runner._interactive_state_summary(
+            [
+                {"type": "user", "content": "prompt"},
+                {"type": "gemini", "content": ""},
+                {"type": "gemini", "content": ""},
+            ]
+        )
+
+        self.assertIn("empty Gemini intermediate messages", summary)
 
     def test_latest_fresh_chat_file_since_prefers_prompt_matching_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -826,6 +855,39 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 5)
             self.assertIn("Reduce the brief size", stderr.getvalue())
+
+    def test_run_advisory_surfaces_timeout_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir)
+            brief_path = project_root / "brief.md"
+            brief_path.write_text("brief", encoding="utf-8")
+            timeout = subprocess.TimeoutExpired(
+                ["gemini"],
+                1200,
+                output="The latest turn only recorded empty Gemini intermediate messages so far.",
+            )
+
+            with mock.patch(
+                "gemini_runner.detect_project_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner.describe_paths", return_value=[]
+            ), mock.patch(
+                "gemini_runner.run_gemini", side_effect=timeout
+            ), mock.patch(
+                "sys.stderr", new_callable=io.StringIO
+            ) as stderr:
+                exit_code = gemini_runner.run_advisory(
+                    description="review",
+                    role_line="role",
+                    label="review",
+                    lane="review",
+                    output_contract="contract",
+                    argv=["--brief-file", str(brief_path)],
+                )
+
+            self.assertEqual(exit_code, 4)
+            self.assertIn("timed out after 1200 seconds", stderr.getvalue())
+            self.assertIn("empty Gemini intermediate messages", stderr.getvalue())
 
 
 if __name__ == "__main__":

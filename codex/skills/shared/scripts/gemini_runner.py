@@ -565,6 +565,13 @@ def _project_chats_dir(project_root: Path) -> Path | None:
     return Path.home() / ".gemini" / GEMINI_TMP_DIRNAME / short_id / "chats"
 
 
+def _session_file_glob(session_id: str) -> str:
+    short_id = session_id.strip()[:8]
+    if short_id:
+        return f"session-*-{short_id}.json"
+    return "session-*.json"
+
+
 def _parse_iso_timestamp(raw_value: object) -> datetime | None:
     if not isinstance(raw_value, str):
         return None
@@ -610,7 +617,7 @@ def _session_conversations_for_id(
         return []
 
     matches: list[tuple[tuple[float, str], Path, dict[str, object]]] = []
-    for path in chats_dir.glob("session-*.json"):
+    for path in chats_dir.glob(_session_file_glob(session_id)):
         conversation = _load_conversation(path)
         if not conversation:
             continue
@@ -876,6 +883,49 @@ def _interactive_outcome(
     return None
 
 
+def _interactive_state_summary(new_messages: list[dict[str, object]]) -> str:
+    if not new_messages:
+        return "No new session messages were recorded yet."
+
+    last_user_index = -1
+    for index, message in enumerate(new_messages):
+        if str(message.get("type", "")).strip() == "user":
+            last_user_index = index
+    if last_user_index == -1:
+        return "The latest merged session state does not contain a new user turn yet."
+
+    trailing_messages = new_messages[last_user_index + 1 :]
+    if not trailing_messages:
+        return "The latest turn only recorded the user message; Gemini has not recorded a reply yet."
+
+    if any(_message_has_active_tool_calls(message) for message in trailing_messages):
+        return "The latest turn still has active Gemini tool calls."
+
+    for message in reversed(trailing_messages):
+        message_type = str(message.get("type", "")).strip()
+        if message_type in {"error", "warning", "info"} and _message_looks_like_error(
+            message
+        ):
+            text = _message_text(message).strip()
+            return f"The latest turn recorded an error marker: {text or message_type}."
+        if message_type == "gemini":
+            text = _message_text(message).strip()
+            if text:
+                return "The latest turn already has a non-empty Gemini reply."
+
+    return "The latest turn only recorded empty Gemini intermediate messages so far."
+
+
+def _interactive_diagnostics(
+    captured_output: str, new_messages: list[dict[str, object]]
+) -> str:
+    summary = _interactive_state_summary(new_messages)
+    output_tail = captured_output.strip()
+    if not output_tail:
+        return summary
+    return f"{summary}\nPTY tail:\n{output_tail[:MAX_OUTPUT_CHARS]}"
+
+
 def _close_interactive_process(process: subprocess.Popen[bytes], master_fd: int) -> None:
     deadline = time.monotonic() + INTERACTIVE_SHUTDOWN_GRACE_SECONDS
     for _ in range(2):
@@ -923,6 +973,7 @@ def _run_interactive_attempt(
     resolved_session_id = resumed_session_id
     outcome: tuple[str, str] | None = None
     last_seen_message_keys = frozenset(baseline_message_keys)
+    new_messages: list[dict[str, object]] = []
 
     try:
         while True:
@@ -989,11 +1040,11 @@ def _run_interactive_attempt(
                         subprocess.CompletedProcess(command, 0, outcome[1], ""),
                         resolved_session_id,
                     )
-                stderr = captured_output.strip()[:MAX_OUTPUT_CHARS]
+                stderr = _interactive_diagnostics(
+                    captured_output, new_messages
+                )[:MAX_OUTPUT_CHARS]
                 if outcome and outcome[0] == "error":
                     stderr = outcome[1][:MAX_OUTPUT_CHARS]
-                if not stderr:
-                    stderr = "Gemini interactive run exited without a recorded final response."
                 return (
                     subprocess.CompletedProcess(
                         command,
@@ -1006,7 +1057,11 @@ def _run_interactive_attempt(
 
             if now - start_monotonic >= timeout_seconds:
                 _close_interactive_process(process, master_fd)
-                raise subprocess.TimeoutExpired(command, timeout_seconds, output=captured_output)
+                raise subprocess.TimeoutExpired(
+                    command,
+                    timeout_seconds,
+                    output=_interactive_diagnostics(captured_output, new_messages),
+                )
 
             time.sleep(INTERACTIVE_POLL_SECONDS)
     except Exception:
@@ -1161,11 +1216,14 @@ def run_advisory(
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 3
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         print(
             f"Gemini {label} timed out after {args.timeout_seconds} seconds.",
             file=sys.stderr,
         )
+        timeout_output = str(getattr(exc, "output", "")).strip()
+        if timeout_output:
+            print(timeout_output[:MAX_OUTPUT_CHARS], file=sys.stderr)
         return 4
     except OSError as exc:
         if exc.errno == errno.E2BIG:
