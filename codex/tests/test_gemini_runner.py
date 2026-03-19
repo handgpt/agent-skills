@@ -240,40 +240,45 @@ class GeminiRunnerTests(unittest.TestCase):
                     gemini_runner._project_short_id(project_root), "workspace"
                 )
 
-    def test_latest_session_file_for_id_prefers_newest_matching_file(self) -> None:
+    def test_session_conversations_for_id_sorts_by_conversation_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
             project_root = home / "workspace"
             project_root.mkdir()
             _write_projects_registry(home, project_root, "proj-1")
-            older = {
-                "sessionId": "session-a",
-                "lastUpdated": "2026-03-20T01:00:00Z",
-                "startTime": "2026-03-20T00:59:00Z",
-                "messages": [],
-            }
-            newer = {
-                "sessionId": "session-a",
-                "lastUpdated": "2026-03-20T02:00:00Z",
-                "startTime": "2026-03-20T01:59:00Z",
-                "messages": [],
-            }
             older_path = _write_session_file(
-                home, "proj-1", "session-old.json", older, mtime=1.0
+                home,
+                "proj-1",
+                "session-old.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T01:00:00Z",
+                    "startTime": "2026-03-20T00:59:00Z",
+                    "messages": [],
+                },
+                mtime=1.0,
             )
             newer_path = _write_session_file(
-                home, "proj-1", "session-new.json", newer, mtime=2.0
+                home,
+                "proj-1",
+                "session-new.json",
+                {
+                    "sessionId": "session-a",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T01:59:00Z",
+                    "messages": [],
+                },
+                mtime=2.0,
             )
 
             with mock.patch.object(gemini_runner.Path, "home", return_value=home):
-                selected = gemini_runner._latest_session_file_for_id(
+                conversations = gemini_runner._session_conversations_for_id(
                     project_root, "session-a"
                 )
 
-            self.assertEqual(selected, newer_path)
-            self.assertNotEqual(selected, older_path)
+            self.assertEqual([item[1] for item in conversations], [older_path, newer_path])
 
-    def test_latest_session_file_for_id_ignores_subagent_sessions(self) -> None:
+    def test_session_conversations_for_id_ignores_subagent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
             project_root = home / "workspace"
@@ -313,11 +318,11 @@ class GeminiRunnerTests(unittest.TestCase):
             )
 
             with mock.patch.object(gemini_runner.Path, "home", return_value=home):
-                selected = gemini_runner._latest_session_file_for_id(
+                conversations = gemini_runner._session_conversations_for_id(
                     project_root, "session-a"
                 )
 
-            self.assertEqual(selected, main_path)
+            self.assertEqual([item[1] for item in conversations], [main_path])
 
     def test_saved_reusable_lane_session_id_requires_complete_gemini_tail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -425,16 +430,6 @@ class GeminiRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual(reusable, "")
-
-    def test_session_is_complete_rejects_empty_gemini_tail_without_text(self) -> None:
-        conversation = {
-            "messages": [
-                {"type": "user", "content": "prompt"},
-                {"type": "gemini", "content": ""},
-            ]
-        }
-
-        self.assertFalse(gemini_runner._session_is_complete(conversation))
 
     def test_merged_session_messages_combines_multiple_files_for_same_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

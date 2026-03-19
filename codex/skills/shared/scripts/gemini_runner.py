@@ -623,11 +623,6 @@ def _session_conversations_for_id(
     return matches
 
 
-def _latest_session_file_for_id(project_root: Path, session_id: str) -> Path | None:
-    matches = _session_conversations_for_id(project_root, session_id)
-    return matches[-1][1] if matches else None
-
-
 def _conversation_messages(conversation: dict[str, object]) -> list[dict[str, object]]:
     messages = conversation.get("messages")
     if not isinstance(messages, list):
@@ -723,16 +718,6 @@ def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
     return False
 
 
-def _last_turn_outcome(messages: list[dict[str, object]]) -> tuple[str, str] | None:
-    return _interactive_outcome(messages)
-
-
-def _session_is_complete(conversation: dict[str, object]) -> bool:
-    messages = _conversation_messages(conversation)
-    outcome = _last_turn_outcome(messages)
-    return bool(outcome and outcome[0] == "success" and outcome[1].strip())
-
-
 def _saved_reusable_lane_session_id(project_root: Path, lane: str) -> str:
     session_id = _saved_lane_session_id(project_root, lane)
     if not session_id:
@@ -740,7 +725,7 @@ def _saved_reusable_lane_session_id(project_root: Path, lane: str) -> str:
     messages = _merged_session_messages(project_root, session_id)
     if not messages:
         return ""
-    outcome = _last_turn_outcome(messages)
+    outcome = _interactive_outcome(messages)
     if not outcome or outcome[0] != "success" or not outcome[1].strip():
         return ""
     return session_id
