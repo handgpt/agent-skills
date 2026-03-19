@@ -49,9 +49,9 @@ python3 scripts/run_gemini_error_analysis.py \
 
 Attach only the few source files, config files, or log excerpts that matter to the diagnosis.
 
-`--brief-file` and `--context-file` are local filesystem paths. The wrapper should tell Gemini to inspect those paths directly on disk instead of inlining their contents into the prompt.
+`--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk.
 
-The wrapper should launch Gemini from the current project root with `gemini -i`, submit the staged instruction file via explicit `@path` inclusion, reuse the latest Gemini session for that project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, stage advisory briefs into a hidden directory under the project root, and only pass workspace-local `--context-file` paths as priority hints.
+The wrapper should launch Gemini from the current project root in headless mode, send the fully assembled prompt inline, prefer Gemini CLI's official machine-readable output via `--output-format json`, reuse the most recent saved Gemini error-analysis session for the same project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -77,5 +77,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared `-i` advisory runner plus session-JSON result/error polling.
+- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared headless advisory runner plus per-project error-lane session reuse and official JSON result parsing.
 - [error-brief-template.md](references/error-brief-template.md) provides a compact diagnostic brief template.

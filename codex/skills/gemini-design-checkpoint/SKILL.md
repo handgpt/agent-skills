@@ -47,19 +47,15 @@ python3 scripts/run_gemini_design_check.py \
 
 Add `--context-file` only for the few files or directories Gemini should treat as priority starting points. Gemini now runs from the project root and may inspect other workspace-local files on its own when needed.
 
-`--brief-file` and `--context-file` are local filesystem paths. The wrapper should tell Gemini to inspect those paths directly on disk instead of inlining their contents into the prompt.
+`--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk.
 
-The wrapper should launch Gemini from the current project root with `gemini -i`, submit the staged instruction file via explicit `@path` inclusion, reuse the latest Gemini session for that project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, stage the brief into a hidden bridge directory under the project root, and only pass workspace-local `--context-file` paths as hints.
+The wrapper should launch Gemini from the current project root in headless mode, send the fully assembled prompt inline, prefer Gemini CLI's official machine-readable output via `--output-format json`, reuse the most recent saved Gemini design-checkpoint session for the same project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as hints.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
 Out-of-workspace `--context-file` paths must be skipped rather than copied into the workspace for Gemini to inspect.
-
-Bridge brief files should be treated as temporary and pruned automatically over time.
-
-If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory brief files do not pollute working tree status.
 
 ## Read The Output Correctly
 
@@ -81,5 +77,5 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 
 ## Resources
 
-- `scripts/run_gemini_design_check.py` wraps Gemini CLI with `-i` prompt submission, project-root execution, per-project session reuse, session-JSON result/error polling, workspace-root exploration, workspace-only context filtering, and result recovery.
+- `scripts/run_gemini_design_check.py` wraps Gemini CLI with the shared headless advisory runner, project-root execution, per-project design-lane session reuse, official JSON result parsing, workspace-root exploration, workspace-only context filtering, and result recovery.
 - [references/design-brief-template.md](references/design-brief-template.md) provides a compact brief template for the advisory pass.

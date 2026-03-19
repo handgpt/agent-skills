@@ -43,13 +43,13 @@ When the matching `AGENTS.md` rules are installed, Codex should run these adviso
 
 The wrappers pass local file and directory paths to Gemini so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
 
-They also launch Gemini from the current project root with `gemini -i`, submit a short interactive query that `@`-includes a staged instruction file, prefer the latest Gemini session for that project when available, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, recover final answers from Gemini's local session JSON, stage advisory briefs into a hidden directory under the project root, prune stale staged brief files automatically, and restrict Gemini review context to workspace-local files and directories only.
+They also launch Gemini from the current project root in headless mode, send the fully assembled advisory prompt inline, reuse the most recent saved Gemini session for the same project and advisory lane when available, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, prefer Gemini CLI's official JSON output for result recovery, and restrict Gemini review context to workspace-local files and directories only.
 
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. Gemini runs from the project root and may inspect other workspace-local files when the brief requires it.
 
 By default, the shared Gemini runner uses Gemini CLI's stable `pro` alias via `--model pro` so these skills prefer the latest Pro-class model without hard-coding a short-lived version string. Set `CODEX_GEMINI_MODEL` if you need to override that default.
 
-Projects that use Git should ignore `.codex-gemini-advisories/`. If the pitfall notebook is personal agent memory rather than shared team knowledge, they should also ignore `.codex-pitfalls.md`.
+If the pitfall notebook is personal agent memory rather than shared team knowledge, projects should ignore `.codex-pitfalls.md`.
 
 Codex should treat the full Gemini wrapper timeout window as expected runtime. With the current defaults, a Gemini advisory run may stay quiet for up to 20 minutes without that implying failure.
 

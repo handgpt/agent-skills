@@ -51,19 +51,15 @@ python3 scripts/run_gemini_review.py \
 
 Attach only the key changed files or targeted excerpts that matter to the review. Gemini now runs from the workspace root and may inspect additional workspace-local files on its own when needed.
 
-`--brief-file` and `--context-file` are local filesystem paths. The wrapper should tell Gemini to inspect those paths directly on disk instead of inlining their contents into the prompt. Prefer passing changed-file paths over pasting large hunks when local path access is sufficient.
+`--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk. Prefer passing changed-file paths over pasting large hunks when local path access is sufficient.
 
-The wrapper should launch Gemini from the current project root with `gemini -i`, submit the staged instruction file via explicit `@path` inclusion, reuse the latest Gemini session for that project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, stage the brief into a hidden bridge directory under the project root, and only pass workspace-local `--context-file` paths as priority hints.
+The wrapper should launch Gemini from the current project root in headless mode, send the fully assembled prompt inline, prefer Gemini CLI's official machine-readable output via `--output-format json`, reuse the most recent saved Gemini review session for the same project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
 Out-of-workspace `--context-file` paths must be skipped rather than copied into the workspace for Gemini to inspect.
-
-Bridge brief files should be treated as temporary and pruned automatically over time.
-
-If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory brief files do not pollute working tree status.
 
 ## Read The Output Correctly
 
@@ -90,5 +86,5 @@ If the project uses Git, ignore `.codex-gemini-advisories/` so staged advisory b
 
 ## Resources
 
-- `scripts/run_gemini_review.py` wraps Gemini CLI with `-i` prompt submission, project-root execution, per-project session reuse, session-JSON result/error polling, workspace-root exploration, workspace-only context filtering, and stable review instructions.
+- `scripts/run_gemini_review.py` wraps Gemini CLI with the shared headless advisory runner, project-root execution, per-project review-lane session reuse, official JSON result parsing, workspace-root exploration, workspace-only context filtering, and stable review instructions.
 - [references/review-brief-template.md](references/review-brief-template.md) provides a compact template for review briefs.
