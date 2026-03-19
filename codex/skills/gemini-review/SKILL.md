@@ -53,7 +53,9 @@ Attach only the key changed files or targeted excerpts that matter to the review
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk. Prefer passing changed-file paths over pasting large hunks when local path access is sufficient.
 
-The wrapper should launch Gemini from the current project root in headless mode, send the fully assembled prompt inline, prefer Gemini CLI's official machine-readable output via `--output-format json`, reuse the most recent saved Gemini review session for the same project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+The wrapper should launch Gemini from the current project root, send the fully assembled prompt inline, reuse the most recent saved Gemini review session for the same project and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+
+The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the current review turn is complete and recover the final answer. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -86,5 +88,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_review.py` wraps Gemini CLI with the shared headless advisory runner, project-root execution, per-project review-lane session reuse, official JSON result parsing, workspace-root exploration, workspace-only context filtering, and stable review instructions.
+- `scripts/run_gemini_review.py` wraps Gemini CLI with the shared advisory runner, project-root execution, per-project review-lane session reuse, interactive session-file result recovery by default, a switchable headless fallback path, workspace-root exploration, workspace-only context filtering, and stable review instructions.
 - [references/review-brief-template.md](references/review-brief-template.md) provides a compact template for review briefs.

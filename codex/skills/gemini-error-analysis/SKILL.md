@@ -51,7 +51,9 @@ Attach only the few source files, config files, or log excerpts that matter to t
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk.
 
-The wrapper should launch Gemini from the current project root in headless mode, send the fully assembled prompt inline, prefer Gemini CLI's official machine-readable output via `--output-format json`, reuse the most recent saved Gemini error-analysis session for the same project when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+The wrapper should launch Gemini from the current project root, send the fully assembled prompt inline, reuse the most recent saved Gemini error-analysis session for the same project and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+
+The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the current diagnostic turn is complete and recover the final answer. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -77,5 +79,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared headless advisory runner plus per-project error-lane session reuse and official JSON result parsing.
+- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared advisory runner plus per-project error-lane session reuse, interactive session-file result recovery by default, and a switchable headless fallback path.
 - [error-brief-template.md](references/error-brief-template.md) provides a compact diagnostic brief template.

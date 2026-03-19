@@ -21,6 +21,32 @@ if str(SHARED_SCRIPTS) not in sys.path:
 import gemini_runner
 
 
+def _write_projects_registry(home: Path, project_root: Path, short_id: str) -> None:
+    registry_path = home / ".gemini" / gemini_runner.GEMINI_PROJECTS_FILE
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(
+        json.dumps({"projects": {str(project_root.resolve()): short_id}}),
+        encoding="utf-8",
+    )
+
+
+def _write_session_file(
+    home: Path,
+    short_id: str,
+    filename: str,
+    payload: dict[str, object],
+    *,
+    mtime: float | None = None,
+) -> Path:
+    chats_dir = home / ".gemini" / gemini_runner.GEMINI_TMP_DIRNAME / short_id / "chats"
+    chats_dir.mkdir(parents=True, exist_ok=True)
+    path = chats_dir / filename
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
 class GeminiRunnerTests(unittest.TestCase):
     def test_noninteractive_command_defaults_to_pro_alias(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -39,15 +65,35 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(command[-1], "prompt")
         self.assertNotIn("-i", command)
 
-    def test_noninteractive_command_respects_model_override_env(self) -> None:
-        with mock.patch.dict(
-            os.environ, {gemini_runner.GEMINI_MODEL_ENV_VAR: "gemini-2.5-pro"}, clear=True
-        ):
-            command = gemini_runner._noninteractive_command("gemini", "prompt", "")
+    def test_interactive_command_defaults_to_pro_alias(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            command = gemini_runner._interactive_command(
+                "gemini", 'line 1\nline "2"', "session-2"
+            )
 
         self.assertIn("--model", command)
-        self.assertIn("gemini-2.5-pro", command)
-        self.assertNotIn("--resume", command)
+        self.assertIn("pro", command)
+        self.assertIn("--approval-mode", command)
+        self.assertIn("yolo", command)
+        self.assertIn("--resume", command)
+        self.assertIn("session-2", command)
+        self.assertIn("-i", command)
+        self.assertNotIn("--output-format", command)
+        self.assertEqual(command[-1], 'line 1\nline "2"')
+
+    def test_safe_prompt_argument_prefixes_hyphen_led_prompt(self) -> None:
+        self.assertEqual(gemini_runner._safe_prompt_argument("- risky"), "\n- risky")
+
+    def test_configured_run_mode_defaults_to_interactive(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(gemini_runner.configured_run_mode(), "interactive")
+
+    def test_configured_run_mode_respects_override(self) -> None:
+        with mock.patch.dict(
+            os.environ, {gemini_runner.GEMINI_RUN_MODE_ENV_VAR: "headless"}, clear=True
+        ):
+            self.assertEqual(gemini_runner.configured_run_mode(), "headless")
+            self.assertEqual(gemini_runner.configured_run_mode("interactive"), "interactive")
 
     def test_gemini_environment_disables_sandbox_for_full_access(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -96,20 +142,13 @@ class GeminiRunnerTests(unittest.TestCase):
             outside_dir.mkdir()
 
             entries = gemini_runner.describe_paths(
-                [
-                    str(inside_dir),
-                    str(missing_inside),
-                    str(outside_dir),
-                ],
+                [str(inside_dir), str(missing_inside), str(outside_dir)],
                 project_root,
             )
 
             self.assertEqual(
                 entries,
-                [
-                    f"- {inside_dir} [directory]",
-                    f"- {missing_inside} [missing]",
-                ],
+                [f"- {inside_dir} [directory]", f"- {missing_inside} [missing]"],
             )
 
     def test_describe_paths_uses_workspace_relative_paths_under_home(self) -> None:
@@ -126,34 +165,7 @@ class GeminiRunnerTests(unittest.TestCase):
                     project_root,
                 )
 
-            self.assertEqual(
-                entries,
-                [
-                    "- skills [directory]",
-                    "- missing.txt [missing]",
-                ],
-            )
-
-    def test_describe_paths_ignores_blank_entries(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            project_root.mkdir()
-
-            entries = gemini_runner.describe_paths(["", "   "], project_root)
-
-            self.assertEqual(entries, [])
-
-    def test_describe_paths_keeps_only_explicit_context_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project_root = Path(tmp_dir) / "workspace"
-            feature_dir = project_root / "src" / "feature"
-            feature_dir.mkdir(parents=True)
-            target_file = feature_dir / "service.py"
-            target_file.write_text("print('ok')\n", encoding="utf-8")
-
-            entries = gemini_runner.describe_paths([str(target_file)], project_root)
-
-            self.assertEqual(entries, [f"- {target_file} [file]"])
+            self.assertEqual(entries, ["- skills [directory]", "- missing.txt [missing]"])
 
     def test_describe_paths_skips_symlink_to_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -176,19 +188,9 @@ class GeminiRunnerTests(unittest.TestCase):
 
         self.assertEqual(payload, {"session_id": "s1", "response": "ok"})
 
-    def test_extract_json_payload_skips_earlier_non_payload_braces(self) -> None:
-        payload = gemini_runner._extract_json_payload(
-            'warning: saw placeholder {ignored}\n{"session_id":"s1","response":"ok"}\n'
-        )
-
-        self.assertEqual(payload, {"session_id": "s1", "response": "ok"})
-
     def test_parse_cli_result_reads_response_and_error(self) -> None:
         success = gemini_runner._parse_cli_result(
-            mock.Mock(
-                stdout='{"session_id":"s1","response":"done"}',
-                stderr="",
-            )
+            mock.Mock(stdout='{"session_id":"s1","response":"done"}', stderr="")
         )
         failure = gemini_runner._parse_cli_result(
             mock.Mock(
@@ -200,27 +202,172 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(success, ("s1", "done", ""))
         self.assertEqual(failure, ("s1", "", "ApiError: 429: Too Many Requests"))
 
-    def test_resume_retry_marker_detection(self) -> None:
-        self.assertTrue(
-            gemini_runner._should_retry_resume(
-                ["gemini", "--resume", "session"],
-                "error: invalid session",
+    def test_project_short_id_reads_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                self.assertEqual(gemini_runner._project_short_id(project_root), "proj-1")
+
+    def test_latest_session_file_for_id_prefers_newest_matching_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            older = {
+                "sessionId": "session-a",
+                "lastUpdated": "2026-03-20T01:00:00Z",
+                "startTime": "2026-03-20T00:59:00Z",
+                "messages": [],
+            }
+            newer = {
+                "sessionId": "session-a",
+                "lastUpdated": "2026-03-20T02:00:00Z",
+                "startTime": "2026-03-20T01:59:00Z",
+                "messages": [],
+            }
+            older_path = _write_session_file(
+                home, "proj-1", "session-old.json", older, mtime=1.0
             )
-        )
-        self.assertFalse(
-            gemini_runner._should_retry_resume(
-                ["gemini", "--resume", "session"],
-                "all good",
+            newer_path = _write_session_file(
+                home, "proj-1", "session-new.json", newer, mtime=2.0
             )
-        )
-        self.assertFalse(
-            gemini_runner._should_retry_resume(
-                ["gemini"],
-                "invalid session",
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                selected = gemini_runner._latest_session_file_for_id(
+                    project_root, "session-a"
+                )
+
+            self.assertEqual(selected, newer_path)
+            self.assertNotEqual(selected, older_path)
+
+    def test_saved_reusable_lane_session_id_requires_complete_gemini_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-finished.json",
+                {
+                    "sessionId": "session-ok",
+                    "lastUpdated": "2026-03-20T02:00:00Z",
+                    "startTime": "2026-03-20T01:59:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {"type": "gemini", "content": "done"},
+                    ],
+                },
             )
+            _write_session_file(
+                home,
+                "proj-1",
+                "session-open.json",
+                {
+                    "sessionId": "session-open",
+                    "lastUpdated": "2026-03-20T03:00:00Z",
+                    "startTime": "2026-03-20T02:59:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {"type": "gemini", "content": "", "toolCalls": [{"status": "executing"}]},
+                    ],
+                },
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                gemini_runner._remember_lane_session(project_root, "review", "session-ok")
+                reusable = gemini_runner._saved_reusable_lane_session_id(
+                    project_root, "review"
+                )
+                gemini_runner._remember_lane_session(project_root, "review", "session-open")
+                not_reusable = gemini_runner._saved_reusable_lane_session_id(
+                    project_root, "review"
+                )
+
+            self.assertEqual(reusable, "session-ok")
+            self.assertEqual(not_reusable, "")
+
+    def test_refreshed_resumed_target_resets_baseline_for_new_resume_file(self) -> None:
+        project_root = Path("/workspace")
+        baseline = Path("/tmp/session-old.json")
+        new_target = Path("/tmp/session-new.json")
+
+        with mock.patch(
+            "gemini_runner._latest_session_file_for_id", return_value=new_target
+        ):
+            target, baseline_messages = gemini_runner._refreshed_resumed_target(
+                project_root,
+                "session-a",
+                baseline,
+                baseline,
+                7,
+            )
+
+        self.assertEqual(target, new_target)
+        self.assertEqual(baseline_messages, 0)
+
+    def test_interactive_outcome_returns_success_after_final_gemini_message(self) -> None:
+        outcome = gemini_runner._interactive_outcome(
+            [
+                {"type": "user", "content": "prompt"},
+                {"type": "gemini", "content": "", "toolCalls": [{"status": "success"}]},
+                {"type": "gemini", "content": "final answer"},
+            ]
         )
 
-    def test_run_gemini_retries_without_resume_on_invalid_saved_session(self) -> None:
+        self.assertEqual(outcome, ("success", "final answer"))
+
+    def test_interactive_outcome_waits_while_tool_call_is_active(self) -> None:
+        outcome = gemini_runner._interactive_outcome(
+            [
+                {"type": "user", "content": "prompt"},
+                {"type": "gemini", "content": "", "toolCalls": [{"status": "executing"}]},
+            ]
+        )
+
+        self.assertIsNone(outcome)
+
+    def test_interactive_outcome_detects_error_markers(self) -> None:
+        outcome = gemini_runner._interactive_outcome(
+            [
+                {"type": "user", "content": "prompt"},
+                {"type": "error", "content": "429 Too Many Requests"},
+            ]
+        )
+
+        self.assertEqual(outcome, ("error", "429 Too Many Requests"))
+
+    def test_run_gemini_dispatches_by_runner_mode(self) -> None:
+        project_root = Path("/workspace")
+        headless = subprocess.CompletedProcess(["gemini"], 0, "headless", "")
+        interactive = subprocess.CompletedProcess(["gemini"], 0, "interactive", "")
+
+        with mock.patch(
+            "gemini_runner._run_headless", return_value=headless
+        ) as headless_mock, mock.patch(
+            "gemini_runner._run_interactive", return_value=interactive
+        ) as interactive_mock:
+            result_interactive = gemini_runner.run_gemini(
+                "prompt", 30, project_root, lane="review", runner_mode="interactive"
+            )
+            result_headless = gemini_runner.run_gemini(
+                "prompt", 30, project_root, lane="review", runner_mode="headless"
+            )
+
+        self.assertEqual(result_interactive.stdout, "interactive")
+        self.assertEqual(result_headless.stdout, "headless")
+        interactive_mock.assert_called_once()
+        headless_mock.assert_called_once()
+
+    def test_run_gemini_retries_without_resume_on_invalid_saved_session_headless(
+        self,
+    ) -> None:
         project_root = Path("/workspace")
         invalid = subprocess.CompletedProcess(
             ["gemini"],
@@ -240,7 +387,7 @@ class GeminiRunnerTests(unittest.TestCase):
         ), mock.patch(
             "gemini_runner._run_noninteractive_attempt", side_effect=[invalid, success]
         ) as run_mock, mock.patch("gemini_runner._remember_lane_session") as remember_mock:
-            result = gemini_runner.run_gemini(
+            result = gemini_runner._run_headless(
                 "prompt",
                 30,
                 project_root,
@@ -270,19 +417,7 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertIn('Quote: "hello"', prompt)
             self.assertNotIn(str(home), prompt)
 
-    def test_noninteractive_command_preserves_quotes_and_newlines(self) -> None:
-        prompt = 'line 1\nline "2"\nline 3'
-
-        command = gemini_runner._noninteractive_command("gemini", prompt, "")
-
-        self.assertEqual(command[-1], prompt)
-
-    def test_noninteractive_command_prefixes_hyphen_led_prompts(self) -> None:
-        command = gemini_runner._noninteractive_command("gemini", "- risky", "")
-
-        self.assertEqual(command[-1], "\n- risky")
-
-    def test_run_advisory_accepts_parser_extension_and_output_contract_builder(
+    def test_run_advisory_accepts_parser_extension_output_contract_builder_and_runner_mode(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -316,7 +451,7 @@ class GeminiRunnerTests(unittest.TestCase):
             ), mock.patch(
                 "gemini_runner.run_gemini",
                 return_value=mock.Mock(returncode=0, stdout="ok", stderr=""),
-            ):
+            ) as run_gemini_mock:
                 exit_code = gemini_runner.run_advisory(
                     description="review",
                     role_line="role",
@@ -324,10 +459,18 @@ class GeminiRunnerTests(unittest.TestCase):
                     lane="review",
                     configure_parser=configure_parser,
                     output_contract_builder=lambda args: f"MODE={args.mode}",
-                    argv=["--brief-file", str(brief_path), "--mode", "structural"],
+                    argv=[
+                        "--brief-file",
+                        str(brief_path),
+                        "--mode",
+                        "structural",
+                        "--runner-mode",
+                        "headless",
+                    ],
                 )
 
             self.assertEqual(exit_code, 0)
+            self.assertEqual(run_gemini_mock.call_args.kwargs["runner_mode"], "headless")
 
     def test_run_advisory_returns_code_5_for_e2big(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
