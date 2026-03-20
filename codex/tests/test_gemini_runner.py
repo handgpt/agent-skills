@@ -646,12 +646,25 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(stderr.getvalue().count(gemini_runner.THOUGHT_PROGRESS_PREFIX), 1)
 
-    def test_run_interactive_attempt_extends_timeout_on_thought_progress(self) -> None:
+    def test_emit_wait_progress_dedupes_percent_changes(self) -> None:
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            last_percent = -1
+            last_percent = gemini_runner._emit_wait_progress(0.0, 0.0, 100, last_percent)
+            last_percent = gemini_runner._emit_wait_progress(0.4, 0.0, 100, last_percent)
+            last_percent = gemini_runner._emit_wait_progress(1.0, 0.0, 100, last_percent)
+
+        self.assertEqual(last_percent, 1)
+        self.assertEqual(stderr.getvalue().count(gemini_runner.WAIT_PROGRESS_PREFIX), 2)
+        self.assertIn("0% (0s/100s)", stderr.getvalue())
+        self.assertIn("1% (1s/100s)", stderr.getvalue())
+
+    def test_run_interactive_attempt_uses_total_timeout_despite_thought_progress(self) -> None:
         project_root = Path("/workspace")
         prompt = "prompt"
         command = ["gemini", "-i", prompt]
         process = mock.Mock()
-        process.poll.side_effect = [None, None]
+        process.poll.return_value = None
+        monotonic_values = (index / 10 for index in range(30))
 
         with mock.patch(
             "gemini_runner._launch_interactive_process", return_value=(process, 11)
@@ -660,8 +673,78 @@ class GeminiRunnerTests(unittest.TestCase):
         ), mock.patch(
             "gemini_runner._close_interactive_process"
         ) as close_mock, mock.patch(
-            "gemini_runner.time.monotonic",
-            side_effect=[0.0, 0.1, 0.2, 0.3, 1.1, 1.2, 1.3, 1.4, 1.5],
+            "gemini_runner.time.monotonic", side_effect=monotonic_values
+        ), mock.patch(
+            "gemini_runner.time.time", return_value=100.0
+        ), mock.patch(
+            "gemini_runner.time.sleep"
+        ), mock.patch(
+            "gemini_runner._merged_session_messages",
+            side_effect=(
+                [
+                    [],
+                    [
+                        {"type": "user", "content": prompt},
+                        {"id": "g1", "type": "gemini", "content": ""},
+                    ],
+                ]
+                + [
+                    [
+                        {"type": "user", "content": prompt},
+                        {
+                            "id": "g1",
+                            "type": "gemini",
+                            "content": "",
+                            "thoughts": [
+                                {
+                                    "timestamp": "2026-03-20T01:00:00Z",
+                                    "subject": "Planning",
+                                    "description": "Still working.",
+                                }
+                            ],
+                        },
+                    ]
+                ]
+                * 20
+            ),
+        ), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ) as stderr:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                gemini_runner._run_interactive_attempt(
+                    command,
+                    1,
+                    project_root,
+                    resumed_session_id="session-a",
+                )
+
+        self.assertIn(gemini_runner.THOUGHT_PROGRESS_PREFIX, stderr.getvalue())
+        self.assertIn(gemini_runner.WAIT_PROGRESS_PREFIX, stderr.getvalue())
+        self.assertIn("100% (1s/1s)", stderr.getvalue())
+        close_mock.assert_called_once()
+
+    def test_run_interactive_attempt_restarts_after_exit_with_thoughts(self) -> None:
+        project_root = Path("/workspace")
+        prompt = "prompt"
+        command = ["gemini", "-i", prompt]
+        process_one = mock.Mock()
+        process_one.poll.side_effect = [None, 0]
+        process_one.returncode = 0
+        process_two = mock.Mock()
+        process_two.poll.side_effect = [None]
+        process_two.returncode = 0
+
+        monotonic_values = (index / 10 for index in range(100))
+
+        with mock.patch(
+            "gemini_runner._launch_interactive_process",
+            side_effect=[(process_one, 11), (process_two, 12)],
+        ), mock.patch(
+            "gemini_runner._drain_pty_output", side_effect=lambda fd, output: output
+        ), mock.patch(
+            "gemini_runner._close_interactive_process"
+        ) as close_mock, mock.patch(
+            "gemini_runner.time.monotonic", side_effect=monotonic_values
         ), mock.patch(
             "gemini_runner.time.time", return_value=100.0
         ), mock.patch(
@@ -672,7 +755,41 @@ class GeminiRunnerTests(unittest.TestCase):
                 [],
                 [
                     {"type": "user", "content": prompt},
-                    {"id": "g1", "type": "gemini", "content": ""},
+                    {
+                        "id": "g1",
+                        "type": "gemini",
+                        "content": "",
+                    },
+                ],
+                [
+                    {"type": "user", "content": prompt},
+                    {
+                        "id": "g1",
+                        "type": "gemini",
+                        "content": "",
+                        "thoughts": [
+                            {
+                                "timestamp": "2026-03-20T01:00:00Z",
+                                "subject": "Planning",
+                                "description": "Still working.",
+                            }
+                        ],
+                    },
+                ],
+                [
+                    {"type": "user", "content": prompt},
+                    {
+                        "id": "g1",
+                        "type": "gemini",
+                        "content": "",
+                        "thoughts": [
+                            {
+                                "timestamp": "2026-03-20T01:00:00Z",
+                                "subject": "Planning",
+                                "description": "Still working.",
+                            }
+                        ],
+                    },
                 ],
                 [
                     {"type": "user", "content": prompt},
@@ -712,7 +829,7 @@ class GeminiRunnerTests(unittest.TestCase):
         ) as stderr:
             result, resolved_session_id = gemini_runner._run_interactive_attempt(
                 command,
-                1,
+                1200,
                 project_root,
                 resumed_session_id="session-a",
             )
@@ -720,8 +837,65 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "done")
         self.assertEqual(resolved_session_id, "session-a")
-        self.assertIn(gemini_runner.THOUGHT_PROGRESS_PREFIX, stderr.getvalue())
-        close_mock.assert_called_once()
+        self.assertIn(gemini_runner.EXIT_RESUME_PROGRESS_NOTE, stderr.getvalue())
+        self.assertEqual(close_mock.call_count, 2)
+
+    def test_run_interactive_attempt_bounds_resume_loop_by_total_timeout(self) -> None:
+        project_root = Path("/workspace")
+        prompt = "prompt"
+        command = ["gemini", "-i", prompt]
+        processes = [mock.Mock(returncode=0) for _ in range(3)]
+        for process in processes:
+            process.poll.side_effect = [0]
+
+        thought_only_messages = [
+            {"type": "user", "content": prompt},
+            {
+                "id": "g1",
+                "type": "gemini",
+                "content": "",
+                "thoughts": [
+                    {
+                        "timestamp": "2026-03-20T01:00:00Z",
+                        "subject": "Planning",
+                        "description": "Still working.",
+                    }
+                ],
+            },
+        ]
+
+        with mock.patch(
+            "gemini_runner._launch_interactive_process",
+            side_effect=[(processes[0], 11), (processes[1], 12), (processes[2], 13)],
+        ), mock.patch(
+            "gemini_runner._drain_pty_output", side_effect=lambda fd, output: output
+        ), mock.patch(
+            "gemini_runner._close_interactive_process"
+        ) as close_mock, mock.patch(
+            "gemini_runner.time.monotonic", side_effect=[0.0, 0.2, 0.7, 1.2]
+        ), mock.patch(
+            "gemini_runner.time.time", return_value=100.0
+        ), mock.patch(
+            "gemini_runner.time.sleep"
+        ), mock.patch(
+            "gemini_runner._merged_session_messages",
+            side_effect=[[]] + [thought_only_messages] * 6,
+        ), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ) as stderr:
+            result, resolved_session_id = gemini_runner._run_interactive_attempt(
+                command,
+                1,
+                project_root,
+                resumed_session_id="session-a",
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(resolved_session_id, "session-a")
+        self.assertIn(gemini_runner.EXIT_RESUME_PROGRESS_NOTE, stderr.getvalue())
+        self.assertIn("100% (1s/1s)", stderr.getvalue())
+        self.assertGreaterEqual(close_mock.call_count, 2)
 
     def test_latest_fresh_chat_file_since_prefers_prompt_matching_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1007,7 +1181,7 @@ class GeminiRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 4)
-            self.assertIn("timed out after 1200 seconds", stderr.getvalue())
+            self.assertIn("timed out after 1200 seconds total wait", stderr.getvalue())
             self.assertIn("empty Gemini intermediate messages", stderr.getvalue())
 
 

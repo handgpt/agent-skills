@@ -63,7 +63,12 @@ INTERACTIVE_ERROR_MARKERS = (
 )
 TERMINAL_TOOL_STATUSES = {"success", "error", "cancelled"}
 THOUGHT_PROGRESS_PREFIX = "[Gemini thought]"
+WAIT_PROGRESS_PREFIX = "[Gemini wait]"
 MAX_THOUGHT_TEXT_CHARS = 400
+EXIT_RESUME_PROGRESS_NOTE = (
+    "[Gemini thought] Gemini exited before a final reply was recorded; "
+    "resuming the same session and continuing to wait."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +795,32 @@ def _emit_new_thought_progress(
     return updated_keys
 
 
+def _emit_wait_progress(
+    now: float,
+    start_monotonic: float,
+    timeout_seconds: int,
+    last_percent: int,
+) -> int:
+    if timeout_seconds <= 0:
+        percent = 100
+        elapsed_seconds = 0
+    else:
+        elapsed_seconds = max(0, int(now - start_monotonic))
+        percent = min(100, int(((now - start_monotonic) / timeout_seconds) * 100))
+    if percent <= last_percent:
+        return last_percent
+    print(
+        f"{WAIT_PROGRESS_PREFIX} {percent}% ({elapsed_seconds}s/{timeout_seconds}s)",
+        file=sys.stderr,
+        flush=True,
+    )
+    return percent
+
+
+def _latest_turn_has_thoughts(new_messages: list[dict[str, object]]) -> bool:
+    return bool(_latest_turn_thought_entries(new_messages))
+
+
 def _merged_session_messages(project_root: Path, session_id: str) -> list[dict[str, object]]:
     conversations = _session_conversations_for_id(project_root, session_id)
     merged_messages: dict[str, dict[str, object]] = {}
@@ -1073,9 +1104,6 @@ def _run_interactive_attempt(
             _message_identity(message)
             for message in _merged_session_messages(project_root, resumed_session_id)
         }
-
-    process, master_fd = _launch_interactive_process(command, project_root)
-    captured_output = ""
     start_monotonic = time.monotonic()
     start_epoch = time.time()
     last_progress = start_monotonic
@@ -1083,106 +1111,161 @@ def _run_interactive_attempt(
     outcome: tuple[str, str] | None = None
     last_progress_signature: tuple[object, ...] = ()
     seen_thought_keys: set[str] = set()
+    last_wait_percent = -1
     new_messages: list[dict[str, object]] = []
+    current_command = list(command)
+    last_wait_percent = _emit_wait_progress(
+        start_monotonic, start_monotonic, timeout_seconds, last_wait_percent
+    )
 
-    try:
-        while True:
-            captured_output = _drain_pty_output(master_fd, captured_output)
+    while True:
+        process, master_fd = _launch_interactive_process(current_command, project_root)
+        captured_output = ""
+        process_closed = False
 
-            if not resolved_session_id:
-                candidate = _latest_fresh_chat_file_since(
-                    project_root, start_epoch, prompt=command[-1]
-                )
-                if candidate is not None:
-                    conversation = _load_conversation(candidate)
-                    if conversation:
-                        resolved_session_id = str(
-                            conversation.get("sessionId", "")
-                        ).strip()
-                        if resolved_session_id:
-                            last_progress = time.monotonic()
-
-            merged_messages: list[dict[str, object]] = []
-            if resolved_session_id:
-                merged_messages = _merged_session_messages(project_root, resolved_session_id)
-                current_progress_signature = tuple(
-                    _message_progress_signature(message) for message in merged_messages
-                )
-                if current_progress_signature != last_progress_signature:
-                    last_progress_signature = current_progress_signature
-                    last_progress = time.monotonic()
-                new_messages = [
-                    message
-                    for message in merged_messages
-                    if _message_identity(message) not in baseline_message_keys
-                ]
-                seen_thought_keys = _emit_new_thought_progress(
-                    new_messages, seen_thought_keys
-                )
-                outcome = _interactive_outcome(new_messages)
-            else:
-                outcome = None
-
-            now = time.monotonic()
-            if outcome and now - last_progress >= INTERACTIVE_STABILITY_SECONDS:
-                status, text = outcome
-                _close_interactive_process(process, master_fd)
-                if status == "success":
-                    return (
-                        subprocess.CompletedProcess(command, 0, text, ""),
-                        resolved_session_id,
-                    )
-                return (
-                    subprocess.CompletedProcess(command, 1, "", text[:MAX_OUTPUT_CHARS]),
-                    resolved_session_id,
-                )
-
-            if process.poll() is not None:
+        try:
+            while True:
                 captured_output = _drain_pty_output(master_fd, captured_output)
+
+                if not resolved_session_id:
+                    candidate = _latest_fresh_chat_file_since(
+                        project_root, start_epoch, prompt=current_command[-1]
+                    )
+                    if candidate is not None:
+                        conversation = _load_conversation(candidate)
+                        if conversation:
+                            resolved_session_id = str(
+                                conversation.get("sessionId", "")
+                            ).strip()
+                            if resolved_session_id:
+                                last_progress = time.monotonic()
+
+                merged_messages: list[dict[str, object]] = []
                 if resolved_session_id:
-                    merged_messages = _merged_session_messages(project_root, resolved_session_id)
+                    merged_messages = _merged_session_messages(
+                        project_root, resolved_session_id
+                    )
+                    current_progress_signature = tuple(
+                        _message_progress_signature(message)
+                        for message in merged_messages
+                    )
+                    if current_progress_signature != last_progress_signature:
+                        last_progress_signature = current_progress_signature
+                        last_progress = time.monotonic()
                     new_messages = [
                         message
                         for message in merged_messages
                         if _message_identity(message) not in baseline_message_keys
                     ]
+                    seen_thought_keys = _emit_new_thought_progress(
+                        new_messages, seen_thought_keys
+                    )
                     outcome = _interactive_outcome(new_messages)
-                _close_interactive_process(process, master_fd)
-                if outcome and outcome[0] == "success":
+                else:
+                    outcome = None
+
+                now = time.monotonic()
+                last_wait_percent = _emit_wait_progress(
+                    now, start_monotonic, timeout_seconds, last_wait_percent
+                )
+                if outcome and now - last_progress >= INTERACTIVE_STABILITY_SECONDS:
+                    status, text = outcome
+                    _close_interactive_process(process, master_fd)
+                    process_closed = True
+                    if status == "success":
+                        return (
+                            subprocess.CompletedProcess(
+                                current_command, 0, text, ""
+                            ),
+                            resolved_session_id,
+                        )
                     return (
-                        subprocess.CompletedProcess(command, 0, outcome[1], ""),
+                        subprocess.CompletedProcess(
+                            current_command, 1, "", text[:MAX_OUTPUT_CHARS]
+                        ),
                         resolved_session_id,
                     )
-                stderr = _interactive_diagnostics(
-                    captured_output, new_messages
-                )[:MAX_OUTPUT_CHARS]
-                if outcome and outcome[0] == "error":
-                    stderr = outcome[1][:MAX_OUTPUT_CHARS]
-                return (
-                    subprocess.CompletedProcess(
-                        command,
-                        process.returncode or 1,
-                        "",
-                        stderr,
-                    ),
-                    resolved_session_id,
-                )
 
-            if now - last_progress >= timeout_seconds:
-                _close_interactive_process(process, master_fd)
-                raise subprocess.TimeoutExpired(
-                    command,
-                    timeout_seconds,
-                    output=_interactive_diagnostics(captured_output, new_messages),
-                )
+                if process.poll() is not None:
+                    captured_output = _drain_pty_output(master_fd, captured_output)
+                    if resolved_session_id:
+                        merged_messages = _merged_session_messages(
+                            project_root, resolved_session_id
+                        )
+                        current_progress_signature = tuple(
+                            _message_progress_signature(message)
+                            for message in merged_messages
+                        )
+                        if current_progress_signature != last_progress_signature:
+                            last_progress_signature = current_progress_signature
+                            last_progress = time.monotonic()
+                        new_messages = [
+                            message
+                            for message in merged_messages
+                            if _message_identity(message) not in baseline_message_keys
+                        ]
+                        seen_thought_keys = _emit_new_thought_progress(
+                            new_messages, seen_thought_keys
+                        )
+                        outcome = _interactive_outcome(new_messages)
 
-            time.sleep(INTERACTIVE_POLL_SECONDS)
-    except Exception:
-        try:
-            _close_interactive_process(process, master_fd)
+                    should_resume_incomplete = (
+                        bool(resolved_session_id)
+                        and outcome is None
+                        and _latest_turn_has_thoughts(new_messages)
+                        and now - start_monotonic < timeout_seconds
+                    )
+
+                    _close_interactive_process(process, master_fd)
+                    process_closed = True
+                    if outcome and outcome[0] == "success":
+                        return (
+                            subprocess.CompletedProcess(
+                                current_command, 0, outcome[1], ""
+                            ),
+                            resolved_session_id,
+                        )
+                    if should_resume_incomplete:
+                        print(EXIT_RESUME_PROGRESS_NOTE, file=sys.stderr, flush=True)
+                        current_command = _interactive_command(
+                            current_command[0],
+                            current_command[-1],
+                            resolved_session_id,
+                        )
+                        time.sleep(INTERACTIVE_POLL_SECONDS)
+                        break
+                    stderr = _interactive_diagnostics(
+                        captured_output, new_messages
+                    )[:MAX_OUTPUT_CHARS]
+                    if outcome and outcome[0] == "error":
+                        stderr = outcome[1][:MAX_OUTPUT_CHARS]
+                    return (
+                        subprocess.CompletedProcess(
+                            current_command,
+                            process.returncode or 1,
+                            "",
+                            stderr,
+                        ),
+                        resolved_session_id,
+                    )
+
+                if now - start_monotonic >= timeout_seconds:
+                    _close_interactive_process(process, master_fd)
+                    process_closed = True
+                    raise subprocess.TimeoutExpired(
+                        current_command,
+                        timeout_seconds,
+                        output=_interactive_diagnostics(captured_output, new_messages),
+                    )
+
+                time.sleep(INTERACTIVE_POLL_SECONDS)
         except Exception:
-            pass
-        raise
+            if not process_closed:
+                try:
+                    _close_interactive_process(process, master_fd)
+                except Exception:
+                    pass
+            raise
 
 
 def _run_interactive(
@@ -1331,7 +1414,10 @@ def run_advisory(
         return 3
     except subprocess.TimeoutExpired as exc:
         print(
-            f"Gemini {label} timed out after {args.timeout_seconds} seconds.",
+            (
+                f"Gemini {label} timed out after "
+                f"{args.timeout_seconds} seconds total wait."
+            ),
             file=sys.stderr,
         )
         timeout_output = str(getattr(exc, "output", "")).strip()
