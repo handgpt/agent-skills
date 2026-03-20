@@ -160,9 +160,9 @@ def _append_context_entry(
     described.append(f"- {_display_workspace_path(path, project_root)} [{kind}]")
 
 
-def describe_paths(raw_paths: list[str], project_root: Path) -> list[str]:
+def _context_paths(raw_paths: list[str], project_root: Path) -> list[Path]:
     resolved_project_root = project_root.resolve()
-    described: list[str] = []
+    context_paths: list[Path] = []
     seen: set[Path] = set()
     for raw_path in raw_paths:
         path = _workspace_path(raw_path, resolved_project_root)
@@ -171,14 +171,39 @@ def describe_paths(raw_paths: list[str], project_root: Path) -> list[str]:
         resolved_path = path.resolve()
         if not _is_within(resolved_path, resolved_project_root):
             continue
-        if not resolved_path.exists():
-            _append_context_entry(
-                described, seen, path, "missing", resolved_project_root
-            )
+        if resolved_path in seen:
             continue
-        kind = "directory" if resolved_path.is_dir() else "file"
+        seen.add(resolved_path)
+        context_paths.append(path)
+    return context_paths
+
+
+def describe_paths(raw_paths: list[str], project_root: Path) -> list[str]:
+    described: list[str] = []
+    seen: set[Path] = set()
+    resolved_project_root = project_root.resolve()
+    for path in _context_paths(raw_paths, project_root):
+        if not path.exists():
+            _append_context_entry(described, seen, path, "missing", resolved_project_root)
+            continue
+        kind = "directory" if path.is_dir() else "file"
         _append_context_entry(described, seen, path, kind, resolved_project_root)
     return described
+
+
+def _focus_scope_root(raw_paths: list[str], project_root: Path) -> Path:
+    resolved_project_root = project_root.resolve()
+    scope_candidates: list[Path] = []
+    for path in _context_paths(raw_paths, resolved_project_root):
+        resolved_path = path.resolve()
+        candidate = resolved_path if path.is_dir() else resolved_path.parent
+        if not _is_within(candidate, resolved_project_root):
+            continue
+        scope_candidates.append(candidate)
+    if not scope_candidates:
+        return resolved_project_root
+    common = Path(os.path.commonpath([str(path) for path in scope_candidates]))
+    return common if _is_within(common, resolved_project_root) else resolved_project_root
 
 
 # ---------------------------------------------------------------------------
@@ -208,28 +233,56 @@ def _save_lane_state(payload: dict[str, object]) -> None:
     )
 
 
-def _lane_state_key(project_root: Path, lane: str) -> str:
+def _scope_key(project_root: Path, scope_root: Path | None = None) -> str:
+    resolved_project_root = project_root.resolve()
+    resolved_scope_root = (scope_root or resolved_project_root).resolve()
+    if not _is_within(resolved_scope_root, resolved_project_root):
+        resolved_scope_root = resolved_project_root
+    try:
+        relative_path = resolved_scope_root.relative_to(resolved_project_root)
+    except ValueError:
+        return "."
+    return "." if str(relative_path) == "." else relative_path.as_posix()
+
+
+def _lane_state_key(project_root: Path, lane: str, scope_root: Path | None = None) -> str:
+    return f"{project_root.resolve()}::{lane}::{_scope_key(project_root, scope_root)}"
+
+
+def _legacy_lane_state_key(project_root: Path, lane: str) -> str:
     return f"{project_root.resolve()}::{lane}"
 
 
-def _remember_lane_session(project_root: Path, lane: str, session_id: str) -> None:
+def _remember_lane_session(
+    project_root: Path, lane: str, session_id: str, scope_root: Path | None = None
+) -> None:
     if not lane or not session_id:
         return
+    resolved_scope_root = project_root.resolve()
+    if scope_root is not None:
+        candidate_scope_root = scope_root.resolve()
+        if _is_within(candidate_scope_root, resolved_scope_root):
+            resolved_scope_root = candidate_scope_root
     payload = _load_lane_state()
-    payload[_lane_state_key(project_root, lane)] = {
+    payload[_lane_state_key(project_root, lane, resolved_scope_root)] = {
         "lane": lane,
         "projectRoot": str(project_root.resolve()),
+        "scopeRoot": str(resolved_scope_root),
         "sessionId": session_id,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
     _save_lane_state(payload)
 
 
-def _saved_lane_session_id(project_root: Path, lane: str) -> str:
+def _saved_lane_session_id(
+    project_root: Path, lane: str, scope_root: Path | None = None
+) -> str:
     if not lane:
         return ""
     payload = _load_lane_state()
-    entry = payload.get(_lane_state_key(project_root, lane))
+    entry = payload.get(_lane_state_key(project_root, lane, scope_root))
+    if not isinstance(entry, dict) and _scope_key(project_root, scope_root) == ".":
+        entry = payload.get(_legacy_lane_state_key(project_root, lane))
     if not isinstance(entry, dict):
         return ""
     return str(entry.get("sessionId", "")).strip()
@@ -245,17 +298,35 @@ def build_prompt(
     brief_text: str,
     context_entries: list[str],
     *,
+    lane: str,
+    focus_root: Path,
     role_line: str,
     output_contract: str,
 ) -> str:
     """Assemble the full prompt from a role line, output contract, and paths."""
+    resolved_project_root = project_root.resolve()
+    resolved_focus_root = focus_root.resolve()
+    if not _is_within(resolved_focus_root, resolved_project_root):
+        resolved_focus_root = resolved_project_root
     sections = [
         role_line,
         "You are running inside Gemini CLI on the same machine as the codebase.",
-        "Use the workspace root below as your filesystem boundary. You may inspect any local file or directory inside that workspace root if it helps you answer well.",
+        (
+            "Use the workspace root below as your filesystem boundary. "
+            "You may inspect any local file or directory inside that workspace root "
+            "if it helps you answer well."
+        ),
+        (
+            "This advisory is only for the current target project and target "
+            "directory listed below. Ignore prior session context about sibling "
+            "projects unless a priority path explicitly points there."
+        ),
         output_contract,
-        "## Current Workspace Root",
-        f"- {_tilde_path(project_root)}",
+        "## Current Advisory Target",
+        f"- Project Name: {resolved_project_root.name}",
+        f"- Advisory Lane: {lane}",
+        f"- Target Directory: {_display_workspace_path(resolved_focus_root, resolved_project_root)}",
+        f"- Workspace Root: {_tilde_path(resolved_project_root)}",
         "## Inlined Brief",
         brief_text.strip() or "- The brief file was empty.",
     ]
@@ -434,13 +505,18 @@ def _run_noninteractive_attempt(
 
 
 def _run_headless(
-    prompt: str, timeout_seconds: int, project_root: Path, *, lane: str
+    prompt: str,
+    timeout_seconds: int,
+    project_root: Path,
+    *,
+    lane: str,
+    scope_root: Path,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
     if not gemini:
         raise FileNotFoundError("gemini executable not found in PATH")
 
-    session_id = _saved_lane_session_id(project_root, lane)
+    session_id = _saved_lane_session_id(project_root, lane, scope_root)
     commands = [_noninteractive_command(gemini, prompt, session_id)]
     if session_id:
         commands.append(_noninteractive_command(gemini, prompt, ""))
@@ -452,7 +528,7 @@ def _run_headless(
 
         resolved_session_id, response_text, error_text = _parse_cli_result(result)
         if resolved_session_id:
-            _remember_lane_session(project_root, lane, resolved_session_id)
+            _remember_lane_session(project_root, lane, resolved_session_id, scope_root)
 
         if result.returncode == 0 and response_text:
             return subprocess.CompletedProcess(command, 0, response_text, "")
@@ -859,8 +935,10 @@ def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
     return False
 
 
-def _saved_reusable_lane_session_id(project_root: Path, lane: str) -> str:
-    session_id = _saved_lane_session_id(project_root, lane)
+def _saved_reusable_lane_session_id(
+    project_root: Path, lane: str, scope_root: Path | None = None
+) -> str:
+    session_id = _saved_lane_session_id(project_root, lane, scope_root)
     if not session_id:
         return ""
     messages = _merged_session_messages(project_root, session_id)
@@ -1269,13 +1347,18 @@ def _run_interactive_attempt(
 
 
 def _run_interactive(
-    prompt: str, timeout_seconds: int, project_root: Path, *, lane: str
+    prompt: str,
+    timeout_seconds: int,
+    project_root: Path,
+    *,
+    lane: str,
+    scope_root: Path,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
     if not gemini:
         raise FileNotFoundError("gemini executable not found in PATH")
 
-    session_id = _saved_reusable_lane_session_id(project_root, lane)
+    session_id = _saved_reusable_lane_session_id(project_root, lane, scope_root)
     commands = [_interactive_command(gemini, prompt, session_id)]
     if session_id:
         commands.append(_interactive_command(gemini, prompt, ""))
@@ -1291,7 +1374,7 @@ def _run_interactive(
         )
         last_result = result
         if resolved_session_id:
-            _remember_lane_session(project_root, lane, resolved_session_id)
+            _remember_lane_session(project_root, lane, resolved_session_id, scope_root)
         combined_output = _combined_result_output(result)
         if result.returncode == 0 and result.stdout.strip():
             return result
@@ -1309,13 +1392,18 @@ def run_gemini(
     project_root: Path,
     *,
     lane: str,
+    scope_root: Path,
     runner_mode: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke Gemini CLI via the configured runner mode."""
     mode = configured_run_mode(runner_mode)
     if mode == "headless":
-        return _run_headless(prompt, timeout_seconds, project_root, lane=lane)
-    return _run_interactive(prompt, timeout_seconds, project_root, lane=lane)
+        return _run_headless(
+            prompt, timeout_seconds, project_root, lane=lane, scope_root=scope_root
+        )
+    return _run_interactive(
+        prompt, timeout_seconds, project_root, lane=lane, scope_root=scope_root
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1385,6 +1473,7 @@ def run_advisory(
         return 2
 
     project_root = detect_project_root()
+    focus_root = _focus_scope_root(args.context_file, project_root)
     context_entries = describe_paths(args.context_file, project_root)
 
     resolved_output_contract = (
@@ -1397,6 +1486,8 @@ def run_advisory(
         project_root,
         brief_text,
         context_entries,
+        lane=lane,
+        focus_root=focus_root,
         role_line=role_line,
         output_contract=resolved_output_contract,
     )
@@ -1407,6 +1498,7 @@ def run_advisory(
             args.timeout_seconds,
             project_root,
             lane=lane,
+            scope_root=focus_root,
             runner_mode=args.runner_mode,
         )
     except FileNotFoundError as exc:

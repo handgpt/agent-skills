@@ -135,6 +135,58 @@ class GeminiRunnerTests(unittest.TestCase):
                     "session-1",
                 )
 
+    def test_lane_session_state_isolated_by_scope_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            scope_a = project_root / "ios"
+            scope_b = project_root / "android"
+            scope_a.mkdir(parents=True)
+            scope_b.mkdir(parents=True)
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                gemini_runner._remember_lane_session(
+                    project_root, "review", "session-ios", scope_root=scope_a
+                )
+                self.assertEqual(
+                    gemini_runner._saved_lane_session_id(
+                        project_root, "review", scope_root=scope_a
+                    ),
+                    "session-ios",
+                )
+                self.assertEqual(
+                    gemini_runner._saved_lane_session_id(
+                        project_root, "review", scope_root=scope_b
+                    ),
+                    "",
+                )
+
+    def test_saved_lane_session_id_root_scope_reads_legacy_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            legacy_payload = {
+                f"{project_root.resolve()}::review": {
+                    "lane": "review",
+                    "projectRoot": str(project_root.resolve()),
+                    "sessionId": "legacy-session",
+                    "updatedAt": "2026-03-21T00:00:00+00:00",
+                }
+            }
+            lane_state_path = home / ".gemini" / gemini_runner.LANE_SESSION_STATE_FILE
+            lane_state_path.parent.mkdir(parents=True, exist_ok=True)
+            lane_state_path.write_text(
+                json.dumps(legacy_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                self.assertEqual(
+                    gemini_runner._saved_lane_session_id(project_root, "review"),
+                    "legacy-session",
+                )
+
     def test_describe_paths_filters_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             project_root = Path(tmp_dir) / "workspace"
@@ -170,6 +222,40 @@ class GeminiRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual(entries, ["- skills [directory]", "- missing.txt [missing]"])
+
+    def test_focus_scope_root_prefers_common_context_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            ios_dir = project_root / "ios"
+            ios_dir.mkdir(parents=True)
+            file_a = ios_dir / "a.swift"
+            file_b = ios_dir / "b.swift"
+            file_a.write_text("a", encoding="utf-8")
+            file_b.write_text("b", encoding="utf-8")
+
+            focus_root = gemini_runner._focus_scope_root(
+                [str(file_a), str(file_b)], project_root
+            )
+
+            self.assertEqual(focus_root, ios_dir.resolve())
+
+    def test_focus_scope_root_bubbles_to_workspace_for_sibling_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "workspace"
+            ios_dir = project_root / "ios"
+            android_dir = project_root / "android"
+            ios_dir.mkdir(parents=True)
+            android_dir.mkdir(parents=True)
+            file_a = ios_dir / "a.swift"
+            file_b = android_dir / "b.kt"
+            file_a.write_text("a", encoding="utf-8")
+            file_b.write_text("b", encoding="utf-8")
+
+            focus_root = gemini_runner._focus_scope_root(
+                [str(file_a), str(file_b)], project_root
+            )
+
+            self.assertEqual(focus_root, project_root.resolve())
 
     def test_describe_paths_skips_symlink_to_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1005,10 +1091,20 @@ class GeminiRunnerTests(unittest.TestCase):
             "gemini_runner._run_interactive", return_value=interactive
         ) as interactive_mock:
             result_interactive = gemini_runner.run_gemini(
-                "prompt", 30, project_root, lane="review", runner_mode="interactive"
+                "prompt",
+                30,
+                project_root,
+                lane="review",
+                scope_root=project_root,
+                runner_mode="interactive",
             )
             result_headless = gemini_runner.run_gemini(
-                "prompt", 30, project_root, lane="review", runner_mode="headless"
+                "prompt",
+                30,
+                project_root,
+                lane="review",
+                scope_root=project_root,
+                runner_mode="headless",
             )
 
         self.assertEqual(result_interactive.stdout, "interactive")
@@ -1043,12 +1139,15 @@ class GeminiRunnerTests(unittest.TestCase):
                 30,
                 project_root,
                 lane="review",
+                scope_root=project_root,
             )
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "final answer")
         self.assertEqual(run_mock.call_count, 2)
-        remember_mock.assert_any_call(project_root, "review", "new-session")
+        remember_mock.assert_any_call(
+            project_root, "review", "new-session", project_root
+        )
 
     def test_build_prompt_hides_home_path_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1059,11 +1158,16 @@ class GeminiRunnerTests(unittest.TestCase):
                     project_root,
                     '# Review Brief\n\nQuote: "hello"',
                     ["- codex/skills/shared/scripts/gemini_runner.py [file]"],
+                    lane="review",
+                    focus_root=project_root / "ios",
                     role_line="role",
                     output_contract="contract",
                 )
 
-            self.assertIn("- ~/workspace", prompt)
+            self.assertIn("Project Name: workspace", prompt)
+            self.assertIn("Advisory Lane: review", prompt)
+            self.assertIn("Target Directory: ios", prompt)
+            self.assertIn("Workspace Root: ~/workspace", prompt)
             self.assertIn("## Inlined Brief", prompt)
             self.assertIn('Quote: "hello"', prompt)
             self.assertNotIn(str(home), prompt)
@@ -1086,15 +1190,21 @@ class GeminiRunnerTests(unittest.TestCase):
                 brief_text: str,
                 context_entries: list[str],
                 *,
+                lane: str,
+                focus_root: Path,
                 role_line: str,
                 output_contract: str,
             ) -> str:
                 self.assertEqual(brief_text, "brief")
+                self.assertEqual(lane, "review")
+                self.assertEqual(focus_root, project_root / "ios")
                 self.assertEqual(output_contract, "MODE=structural")
                 return "assembled prompt"
 
             with mock.patch(
                 "gemini_runner.detect_project_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner._focus_scope_root", return_value=project_root / "ios"
             ), mock.patch(
                 "gemini_runner.describe_paths", return_value=[]
             ), mock.patch(
@@ -1122,6 +1232,7 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(run_gemini_mock.call_args.kwargs["runner_mode"], "headless")
+            self.assertEqual(run_gemini_mock.call_args.kwargs["scope_root"], project_root / "ios")
 
     def test_run_advisory_returns_code_5_for_e2big(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1132,6 +1243,8 @@ class GeminiRunnerTests(unittest.TestCase):
 
             with mock.patch(
                 "gemini_runner.detect_project_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner._focus_scope_root", return_value=project_root
             ), mock.patch(
                 "gemini_runner.describe_paths", return_value=[]
             ), mock.patch(
@@ -1164,6 +1277,8 @@ class GeminiRunnerTests(unittest.TestCase):
 
             with mock.patch(
                 "gemini_runner.detect_project_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner._focus_scope_root", return_value=project_root
             ), mock.patch(
                 "gemini_runner.describe_paths", return_value=[]
             ), mock.patch(
