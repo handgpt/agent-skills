@@ -62,6 +62,8 @@ INTERACTIVE_ERROR_MARKERS = (
     "unavailable",
 )
 TERMINAL_TOOL_STATUSES = {"success", "error", "cancelled"}
+THOUGHT_PROGRESS_PREFIX = "[Gemini thought]"
+MAX_THOUGHT_TEXT_CHARS = 400
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +689,107 @@ def _message_timestamp_sort_value(message: dict[str, object]) -> float:
     return parsed.timestamp()
 
 
+def _message_thoughts(message: dict[str, object]) -> list[dict[str, object]]:
+    thoughts = message.get("thoughts")
+    if not isinstance(thoughts, list):
+        return []
+    return [thought for thought in thoughts if isinstance(thought, dict)]
+
+
+def _thought_signature(thought: dict[str, object]) -> tuple[str, str, str]:
+    return (
+        str(thought.get("timestamp", "")).strip(),
+        str(thought.get("subject", "")).strip(),
+        str(thought.get("description", "")).strip(),
+    )
+
+
+def _thought_text(thought: dict[str, object]) -> str:
+    subject = str(thought.get("subject", "")).strip()
+    description = str(thought.get("description", "")).strip()
+    if subject and description:
+        return f"{subject}: {description}"
+    return subject or description
+
+
+def _tool_call_signature(tool_call: dict[str, object]) -> tuple[str, str, str, int]:
+    result_text = _extract_text_from_content(tool_call.get("result")).strip()
+    return (
+        str(tool_call.get("id", "")).strip(),
+        str(tool_call.get("name", "")).strip(),
+        str(tool_call.get("status", "")).strip().lower(),
+        len(result_text),
+    )
+
+
+def _message_progress_signature(
+    message: dict[str, object],
+) -> tuple[
+    str,
+    str,
+    str,
+    tuple[tuple[str, str, str], ...],
+    tuple[tuple[str, str, str, int], ...],
+]:
+    tool_calls = message.get("toolCalls")
+    tool_signatures: list[tuple[str, str, str, int]] = []
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if isinstance(tool_call, dict):
+                tool_signatures.append(_tool_call_signature(tool_call))
+    return (
+        _message_identity(message),
+        str(message.get("type", "")).strip(),
+        _message_text(message).strip(),
+        tuple(_thought_signature(thought) for thought in _message_thoughts(message)),
+        tuple(tool_signatures),
+    )
+
+
+def _latest_turn_messages(new_messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    last_user_index = -1
+    for index, message in enumerate(new_messages):
+        if str(message.get("type", "")).strip() == "user":
+            last_user_index = index
+    if last_user_index == -1:
+        return []
+    return new_messages[last_user_index + 1 :]
+
+
+def _latest_turn_thought_entries(
+    new_messages: list[dict[str, object]],
+) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    for message in _latest_turn_messages(new_messages):
+        message_key = _message_identity(message)
+        for index, thought in enumerate(_message_thoughts(message)):
+            thought_key = (
+                f"{message_key}|{index}|"
+                f"{thought.get('timestamp', '')}|{thought.get('subject', '')}|"
+                f"{thought.get('description', '')}"
+            )
+            thought_text = _thought_text(thought).strip()
+            entries.append((thought_key, thought_text))
+    return entries
+
+
+def _emit_new_thought_progress(
+    new_messages: list[dict[str, object]], seen_thought_keys: set[str]
+) -> set[str]:
+    updated_keys = set(seen_thought_keys)
+    for thought_key, thought_text in _latest_turn_thought_entries(new_messages):
+        if thought_key in updated_keys:
+            continue
+        updated_keys.add(thought_key)
+        if thought_text:
+            print(
+                f"{THOUGHT_PROGRESS_PREFIX} {thought_text[:MAX_THOUGHT_TEXT_CHARS]}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return updated_keys
+
+
 def _merged_session_messages(project_root: Path, session_id: str) -> list[dict[str, object]]:
     conversations = _session_conversations_for_id(project_root, session_id)
     merged_messages: dict[str, dict[str, object]] = {}
@@ -855,14 +958,9 @@ def _interactive_outcome(
     if not new_messages:
         return None
 
-    last_user_index = -1
-    for index, message in enumerate(new_messages):
-        if str(message.get("type", "")).strip() == "user":
-            last_user_index = index
-    if last_user_index == -1:
+    trailing_messages = _latest_turn_messages(new_messages)
+    if not trailing_messages:
         return None
-
-    trailing_messages = new_messages[last_user_index + 1 :]
     for message in trailing_messages:
         if _message_has_active_tool_calls(message):
             return None
@@ -887,14 +985,11 @@ def _interactive_state_summary(new_messages: list[dict[str, object]]) -> str:
     if not new_messages:
         return "No new session messages were recorded yet."
 
-    last_user_index = -1
-    for index, message in enumerate(new_messages):
-        if str(message.get("type", "")).strip() == "user":
-            last_user_index = index
-    if last_user_index == -1:
+    trailing_messages = _latest_turn_messages(new_messages)
+    if not trailing_messages and not any(
+        str(message.get("type", "")).strip() == "user" for message in new_messages
+    ):
         return "The latest merged session state does not contain a new user turn yet."
-
-    trailing_messages = new_messages[last_user_index + 1 :]
     if not trailing_messages:
         return "The latest turn only recorded the user message; Gemini has not recorded a reply yet."
 
@@ -913,17 +1008,31 @@ def _interactive_state_summary(new_messages: list[dict[str, object]]) -> str:
             if text:
                 return "The latest turn already has a non-empty Gemini reply."
 
+    thought_entries = _latest_turn_thought_entries(new_messages)
+    if thought_entries:
+        return (
+            f"The latest turn recorded {len(thought_entries)} Gemini thought(s) "
+            "but no final reply yet."
+        )
+
     return "The latest turn only recorded empty Gemini intermediate messages so far."
 
 
 def _interactive_diagnostics(
     captured_output: str, new_messages: list[dict[str, object]]
 ) -> str:
-    summary = _interactive_state_summary(new_messages)
+    sections = [_interactive_state_summary(new_messages)]
+    thought_entries = _latest_turn_thought_entries(new_messages)
+    if thought_entries:
+        recent_thoughts = "\n".join(
+            f"- {thought_text[:MAX_THOUGHT_TEXT_CHARS] or '(empty thought)'}"
+            for _, thought_text in thought_entries[-3:]
+        )
+        sections.append(f"Latest thoughts:\n{recent_thoughts}")
     output_tail = captured_output.strip()
-    if not output_tail:
-        return summary
-    return f"{summary}\nPTY tail:\n{output_tail[:MAX_OUTPUT_CHARS]}"
+    if output_tail:
+        sections.append(f"PTY tail:\n{output_tail[:MAX_OUTPUT_CHARS]}")
+    return "\n".join(section for section in sections if section)
 
 
 def _close_interactive_process(process: subprocess.Popen[bytes], master_fd: int) -> None:
@@ -969,10 +1078,11 @@ def _run_interactive_attempt(
     captured_output = ""
     start_monotonic = time.monotonic()
     start_epoch = time.time()
-    last_change = start_monotonic
+    last_progress = start_monotonic
     resolved_session_id = resumed_session_id
     outcome: tuple[str, str] | None = None
-    last_seen_message_keys = frozenset(baseline_message_keys)
+    last_progress_signature: tuple[object, ...] = ()
+    seen_thought_keys: set[str] = set()
     new_messages: list[dict[str, object]] = []
 
     try:
@@ -990,28 +1100,31 @@ def _run_interactive_attempt(
                             conversation.get("sessionId", "")
                         ).strip()
                         if resolved_session_id:
-                            last_change = time.monotonic()
+                            last_progress = time.monotonic()
 
             merged_messages: list[dict[str, object]] = []
             if resolved_session_id:
                 merged_messages = _merged_session_messages(project_root, resolved_session_id)
-                current_message_keys = frozenset(
-                    _message_identity(message) for message in merged_messages
+                current_progress_signature = tuple(
+                    _message_progress_signature(message) for message in merged_messages
                 )
-                if current_message_keys != last_seen_message_keys:
-                    last_seen_message_keys = current_message_keys
-                    last_change = time.monotonic()
+                if current_progress_signature != last_progress_signature:
+                    last_progress_signature = current_progress_signature
+                    last_progress = time.monotonic()
                 new_messages = [
                     message
                     for message in merged_messages
                     if _message_identity(message) not in baseline_message_keys
                 ]
+                seen_thought_keys = _emit_new_thought_progress(
+                    new_messages, seen_thought_keys
+                )
                 outcome = _interactive_outcome(new_messages)
             else:
                 outcome = None
 
             now = time.monotonic()
-            if outcome and now - last_change >= INTERACTIVE_STABILITY_SECONDS:
+            if outcome and now - last_progress >= INTERACTIVE_STABILITY_SECONDS:
                 status, text = outcome
                 _close_interactive_process(process, master_fd)
                 if status == "success":
@@ -1055,7 +1168,7 @@ def _run_interactive_attempt(
                     resolved_session_id,
                 )
 
-            if now - start_monotonic >= timeout_seconds:
+            if now - last_progress >= timeout_seconds:
                 _close_interactive_process(process, master_fd)
                 raise subprocess.TimeoutExpired(
                     command,
