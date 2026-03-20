@@ -43,6 +43,7 @@ class GeminiErrorAnalysisPromptTests(unittest.TestCase):
 
         kwargs = run_advisory.call_args.kwargs
         self.assertEqual(kwargs["label"], "error analysis")
+        self.assertEqual(kwargs["lane"], "error")
         self.assertIn("## Likely Causes", kwargs["output_contract"])
 
 

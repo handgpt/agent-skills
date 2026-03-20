@@ -35,7 +35,7 @@ One short paragraph.
 Rules:
 - You are running via Gemini CLI on the same machine as the local project files.
 - The current workspace root is listed below. Review only files and directories inside that workspace root.
-- Read the review brief from the local path below before answering.
+- Read the inlined review brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
 - Ignore any path outside the current workspace root, even if it appears in the brief or prior session context.
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
@@ -72,7 +72,7 @@ One short paragraph.
 Rules:
 - You are running via Gemini CLI on the same machine as the local project files.
 - The current workspace root is listed below. Review only files and directories inside that workspace root.
-- Read the review brief from the local path below before answering.
+- Read the inlined review brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
 - Ignore any path outside the current workspace root, even if it appears in the brief or prior session context.
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
@@ -106,6 +106,7 @@ def main() -> int:
         description="Run a bounded Gemini CLI review pass and print advisory output.",
         role_line=ROLE_LINE,
         label="review",
+        lane="review",
         output_contract_builder=build_output_contract,
         configure_parser=configure_parser,
     )

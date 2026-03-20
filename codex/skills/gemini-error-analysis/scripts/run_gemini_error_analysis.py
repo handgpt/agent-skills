@@ -37,7 +37,7 @@ One short paragraph.
 Rules:
 - You are running via Gemini CLI on the same machine as the local project files.
 - The current workspace root is listed below. Analyze only files and directories inside that workspace root.
-- Read the diagnostic brief from the local path below before answering.
+- Read the inlined diagnostic brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
 - Ignore any path outside the current workspace root, even if it appears in the brief or prior session context.
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
@@ -56,6 +56,7 @@ def main() -> int:
         role_line=ROLE_LINE,
         output_contract=OUTPUT_CONTRACT,
         label="error analysis",
+        lane="error",
     )
 
 

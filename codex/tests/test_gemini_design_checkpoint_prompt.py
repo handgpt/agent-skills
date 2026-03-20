@@ -49,6 +49,7 @@ class GeminiDesignCheckpointPromptTests(unittest.TestCase):
 
         kwargs = run_advisory.call_args.kwargs
         self.assertEqual(kwargs["label"], "design checkpoint")
+        self.assertEqual(kwargs["lane"], "design")
         self.assertIn("## Best-Practice Alignment", kwargs["output_contract"])
 
 
