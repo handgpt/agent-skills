@@ -41,6 +41,8 @@ Run:
 
 ```bash
 python3 scripts/run_gemini_design_check.py \
+  --project-root path/to/android \
+  --project-root path/to/ios \
   --brief-file /tmp/design-brief.md \
   --context-file path/to/doc-or-spec.md
 ```
@@ -49,11 +51,13 @@ Add `--context-file` only for the few files or directories Gemini should treat a
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk.
 
-The wrapper should launch Gemini from the current project root, send the fully assembled prompt inline, reuse the most recent saved Gemini design-checkpoint session for the same project and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as hints.
+When one design checkpoint must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner will resolve them inside the current Codex workspace, switch Gemini's `cwd` to their common ancestor inside that workspace, list each project explicitly in the prompt, stamp the prompt with a run marker plus project-scope key, and reuse sessions by the full project set rather than by one repo root.
+
+The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, reuse the most recent saved Gemini design-checkpoint session for the same project set and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as hints.
 
 The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner observes Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the advisory turn is finished and recover the final answer. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
 
-`--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
+`--context-file` paths are priority starting hints only. Gemini runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
@@ -65,7 +69,7 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 - Evaluate each point yourself. Accept, reject, or defer it explicitly in your own reasoning.
 - Treat "best practice" as a two-level check: the whole design shape and the module boundaries must both make sense. Local module quality does not rescue a weak overall architecture.
 - When Gemini relies on external guidance, prefer conclusions grounded in official documentation and community experience rather than unsupported intuition.
-- Review only workspace-local files and directories. Ignore any path outside the current project root, even if it appears in the brief or prior thread context.
+- Review only workspace-local files and directories. Ignore any path outside the current workspace root, even if it appears in the brief or prior thread context.
 - Once the advisory process has started, treat the full configured timeout as normal waiting time. With the default configuration, allow Gemini up to 20 minutes before treating the run as timed out.
 - If the Gemini process is still running but has not produced output yet, keep waiting. Do not restart it, request escalation, or assume failure solely because the run is slow.
 - If Gemini is unavailable, times out, or returns low-signal output, continue without retry loops and note that the advisory pass was unavailable.

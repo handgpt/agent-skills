@@ -52,6 +52,18 @@ def _session_filename(label: str, session_id: str) -> str:
 
 
 class GeminiRunnerTests(unittest.TestCase):
+    def test_detect_workspace_root_prefers_nearest_agents_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace_root = Path(tmp_dir) / "workspace"
+            nested_root = workspace_root / "ios" / "app"
+            nested_root.mkdir(parents=True)
+            (workspace_root / "AGENTS.md").write_text("workspace", encoding="utf-8")
+
+            with mock.patch("gemini_runner.Path.cwd", return_value=nested_root):
+                self.assertEqual(
+                    gemini_runner.detect_workspace_root(), workspace_root.resolve()
+                )
+
     def test_noninteractive_command_defaults_to_pro_alias(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             command = gemini_runner._noninteractive_command(
@@ -161,6 +173,44 @@ class GeminiRunnerTests(unittest.TestCase):
                     "",
                 )
 
+    def test_lane_session_state_isolated_by_project_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            workspace_root = home / "workspace"
+            ios_root = workspace_root / "ios"
+            server_root = workspace_root / "server"
+            android_root = workspace_root / "android"
+            ios_root.mkdir(parents=True)
+            server_root.mkdir(parents=True)
+            android_root.mkdir(parents=True)
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                gemini_runner._remember_lane_session(
+                    workspace_root,
+                    "review",
+                    "session-ios-server",
+                    scope_root=workspace_root,
+                    project_roots=(ios_root, server_root),
+                )
+                self.assertEqual(
+                    gemini_runner._saved_lane_session_id(
+                        workspace_root,
+                        "review",
+                        scope_root=workspace_root,
+                        project_roots=(ios_root, server_root),
+                    ),
+                    "session-ios-server",
+                )
+                self.assertEqual(
+                    gemini_runner._saved_lane_session_id(
+                        workspace_root,
+                        "review",
+                        scope_root=workspace_root,
+                        project_roots=(ios_root, android_root),
+                    ),
+                    "",
+                )
+
     def test_saved_lane_session_id_root_scope_reads_legacy_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
@@ -256,6 +306,40 @@ class GeminiRunnerTests(unittest.TestCase):
             )
 
             self.assertEqual(focus_root, project_root.resolve())
+
+    def test_normalize_multi_project_roots_prefers_explicit_roots_within_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace_root = Path(tmp_dir) / "workspace"
+            ios_root = workspace_root / "ios"
+            server_root = workspace_root / "server"
+            ios_root.mkdir(parents=True)
+            server_root.mkdir(parents=True)
+
+            roots = gemini_runner._normalize_multi_project_roots(
+                [str(ios_root), str(server_root)],
+                [],
+                workspace_root,
+                workspace_root,
+            )
+
+            self.assertEqual(roots, (ios_root.resolve(), server_root.resolve()))
+
+    def test_normalize_multi_project_roots_rejects_roots_outside_workspace_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace_root = Path(tmp_dir) / "workspace"
+            ios_root = workspace_root / "ios"
+            outside_root = Path(tmp_dir) / "outside"
+            ios_root.mkdir(parents=True)
+            outside_root.mkdir(parents=True)
+
+            roots = gemini_runner._normalize_multi_project_roots(
+                [str(ios_root), str(outside_root)],
+                [],
+                workspace_root,
+                workspace_root,
+            )
+
+            self.assertEqual(roots, (ios_root.resolve(),))
 
     def test_describe_paths_skips_symlink_to_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -374,6 +458,23 @@ class GeminiRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual([item[1] for item in conversations], [older_path, newer_path])
+
+    def test_load_conversation_retries_partial_json_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "session.json"
+            path.write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=['{"sessionId"', '{"sessionId":"session-a","messages":[]}'],
+            ), mock.patch("gemini_runner.time.sleep") as sleep_mock:
+                conversation = gemini_runner._load_conversation(path)
+
+            self.assertEqual(conversation, {"sessionId": "session-a", "messages": []})
+            sleep_mock.assert_called_once_with(
+                gemini_runner.JSON_READ_RETRY_DELAY_SECONDS
+            )
 
     def test_session_conversations_for_id_ignores_subagent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1031,6 +1132,23 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertEqual(selected, matching_path)
             self.assertNotEqual(selected, unrelated_path)
 
+    def test_conversation_matches_prompt_prefers_run_marker(self) -> None:
+        conversation = {
+            "messages": [
+                {
+                    "type": "user",
+                    "content": "header\n- Run Marker: cadv-abc123\nfooter",
+                }
+            ]
+        }
+
+        self.assertTrue(
+            gemini_runner._conversation_matches_prompt(
+                conversation,
+                "header changed\n- Run Marker: cadv-abc123\nfooter changed",
+            )
+        )
+
     def test_latest_fresh_chat_file_since_ignores_subagent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
@@ -1146,7 +1264,7 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(result.stdout, "final answer")
         self.assertEqual(run_mock.call_count, 2)
         remember_mock.assert_any_call(
-            project_root, "review", "new-session", project_root
+            project_root, "review", "new-session", project_root, None
         )
 
     def test_build_prompt_hides_home_path_prefixes(self) -> None:
@@ -1160,14 +1278,21 @@ class GeminiRunnerTests(unittest.TestCase):
                     ["- codex/skills/shared/scripts/gemini_runner.py [file]"],
                     lane="review",
                     focus_root=project_root / "ios",
+                    project_roots=(project_root / "ios", project_root / "server"),
+                    run_marker="cadv-testmarker",
                     role_line="role",
                     output_contract="contract",
                 )
 
+            self.assertIn("## Projects In Scope", prompt)
+            self.assertIn("- ios: ios", prompt)
+            self.assertIn("- server: server", prompt)
             self.assertIn("Project Name: workspace", prompt)
             self.assertIn("Advisory Lane: review", prompt)
+            self.assertIn("Project Scope Key: ios|server", prompt)
             self.assertIn("Target Directory: ios", prompt)
             self.assertIn("Workspace Root: ~/workspace", prompt)
+            self.assertIn("Run Marker: cadv-testmarker", prompt)
             self.assertIn("## Inlined Brief", prompt)
             self.assertIn('Quote: "hello"', prompt)
             self.assertNotIn(str(home), prompt)
@@ -1192,17 +1317,29 @@ class GeminiRunnerTests(unittest.TestCase):
                 *,
                 lane: str,
                 focus_root: Path,
+                project_roots: tuple[Path, ...] | None,
+                run_marker: str,
                 role_line: str,
                 output_contract: str,
             ) -> str:
                 self.assertEqual(brief_text, "brief")
                 self.assertEqual(lane, "review")
-                self.assertEqual(focus_root, project_root / "ios")
+                self.assertEqual(focus_root.resolve(), (project_root / "ios").resolve())
+                self.assertEqual(
+                    tuple(path.resolve() for path in project_roots or ()),
+                    ((project_root / "ios").resolve(),),
+                )
+                self.assertTrue(run_marker.startswith("cadv-"))
                 self.assertEqual(output_contract, "MODE=structural")
                 return "assembled prompt"
 
             with mock.patch(
                 "gemini_runner.detect_project_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner.detect_workspace_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner._normalize_multi_project_roots",
+                return_value=(project_root / "ios",),
             ), mock.patch(
                 "gemini_runner._focus_scope_root", return_value=project_root / "ios"
             ), mock.patch(
@@ -1244,6 +1381,11 @@ class GeminiRunnerTests(unittest.TestCase):
             with mock.patch(
                 "gemini_runner.detect_project_root", return_value=project_root
             ), mock.patch(
+                "gemini_runner.detect_workspace_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner._normalize_multi_project_roots",
+                return_value=(project_root,),
+            ), mock.patch(
                 "gemini_runner._focus_scope_root", return_value=project_root
             ), mock.patch(
                 "gemini_runner.describe_paths", return_value=[]
@@ -1277,6 +1419,11 @@ class GeminiRunnerTests(unittest.TestCase):
 
             with mock.patch(
                 "gemini_runner.detect_project_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner.detect_workspace_root", return_value=project_root
+            ), mock.patch(
+                "gemini_runner._normalize_multi_project_roots",
+                return_value=(project_root,),
             ), mock.patch(
                 "gemini_runner._focus_scope_root", return_value=project_root
             ), mock.patch(

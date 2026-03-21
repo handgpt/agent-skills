@@ -35,6 +35,8 @@ Run:
 
 ```bash
 python3 scripts/run_gemini_review.py \
+  --project-root path/to/android \
+  --project-root path/to/ios \
   --brief-file /tmp/review-brief.md \
   --context-file path/to/changed/file.ext
 ```
@@ -44,6 +46,9 @@ For important checkpoints that need a broader module and architecture pass, run:
 ```bash
 python3 scripts/run_gemini_review.py \
   --mode structural \
+  --project-root path/to/android \
+  --project-root path/to/ios \
+  --project-root path/to/server \
   --brief-file /tmp/review-brief.md \
   --context-file path/to/changed/file.ext \
   --context-file path/to/relevant/module-or-directory
@@ -53,11 +58,13 @@ Attach only the key changed files or targeted excerpts that matter to the review
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk. Prefer passing changed-file paths over pasting large hunks when local path access is sufficient.
 
-The wrapper should launch Gemini from the current project root, send the fully assembled prompt inline, reuse the most recent saved Gemini review session for the same project and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner will resolve them inside the current Codex workspace, switch Gemini's `cwd` to their common ancestor inside that workspace, list each project explicitly in the prompt, stamp the prompt with a run marker plus project-scope key, and reuse sessions by the full project set rather than by one repo root.
 
-The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the current review turn is complete and recover the final answer. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
+The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, reuse the most recent saved Gemini review session for the same project set and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
 
-`--context-file` paths are priority starting hints only. Gemini runs from the project root and may inspect any other workspace-local files or directories it decides are relevant.
+The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's workspace session file under `~/.gemini/tmp/<project>/chats/` to detect when the current review turn is complete and recover the final answer. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
+
+`--context-file` paths are priority starting hints only. Gemini runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
 The shared runner should default to Gemini CLI's stable `pro` alias via `--model pro` so this skill stays on the latest Pro-class route without hard-coding a fast-changing version string. If needed, override it with `CODEX_GEMINI_MODEL`.
 
@@ -69,7 +76,7 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 - In structural mode, expect an additional `Structural & Architectural Risks` section focused on module boundaries, coupling, ownership, and interface design.
 - Treat Gemini as another reviewer, not the source of truth.
 - Validate any claim against the actual diff before acting on it.
-- Review only workspace-local files and directories. Ignore any path outside the current project root, even if it appears in the brief or prior thread context.
+- Review only workspace-local files and directories. Ignore any path outside the current workspace root, even if it appears in the brief or prior thread context.
 - Ask Gemini to look not only for behavioral bugs, but also for dead code, stale compatibility branches, duplicated logic, and implementation bloat that can be safely simplified.
 - At important checkpoints, ask Gemini to zoom out from the changed files and inspect the surrounding modules and directories for structural issues.
 - Once the advisory process has started, treat the full configured timeout as normal waiting time. With the default configuration, allow Gemini up to 20 minutes before treating the run as timed out.
