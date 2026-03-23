@@ -30,6 +30,8 @@ GEMINI_OUTPUT_FORMAT = "json"
 GEMINI_RUN_MODE_ENV_VAR = "CODEX_GEMINI_RUN_MODE"
 DEFAULT_GEMINI_RUN_MODE = "interactive"
 VALID_GEMINI_RUN_MODES = ("interactive", "headless")
+GEMINI_SESSION_TTL_ENV_VAR = "CODEX_GEMINI_SESSION_TTL_SECONDS"
+DEFAULT_SESSION_REUSE_TTL_SECONDS = 6 * 60 * 60
 LANE_SESSION_STATE_FILE = "codex-lane-sessions.json"
 GEMINI_PROJECTS_FILE = "projects.json"
 GEMINI_TMP_DIRNAME = "tmp"
@@ -377,6 +379,17 @@ def _save_lane_state(payload: dict[str, object]) -> None:
     )
 
 
+def configured_session_reuse_ttl_seconds() -> int:
+    raw_value = os.environ.get(GEMINI_SESSION_TTL_ENV_VAR, "").strip()
+    if not raw_value:
+        return DEFAULT_SESSION_REUSE_TTL_SECONDS
+    try:
+        ttl_seconds = int(raw_value)
+    except ValueError:
+        return DEFAULT_SESSION_REUSE_TTL_SECONDS
+    return max(0, ttl_seconds)
+
+
 def _scope_key(project_root: Path, scope_root: Path | None = None) -> str:
     resolved_project_root = project_root.resolve()
     resolved_scope_root = (scope_root or resolved_project_root).resolve()
@@ -467,6 +480,17 @@ def _saved_lane_session_id(
         entry = payload.get(_legacy_lane_state_key(project_root, lane))
     if not isinstance(entry, dict):
         return ""
+    ttl_seconds = configured_session_reuse_ttl_seconds()
+    if ttl_seconds <= 0:
+        return ""
+    raw_updated_at = entry.get("updatedAt")
+    updated_at = _parse_iso_timestamp(raw_updated_at)
+    if raw_updated_at in (None, ""):
+        return str(entry.get("sessionId", "")).strip()
+    if updated_at is None:
+        return ""
+    if (datetime.now(timezone.utc) - updated_at).total_seconds() > ttl_seconds:
+        return ""
     return str(entry.get("sessionId", "")).strip()
 
 
@@ -508,6 +532,16 @@ def build_prompt(
             "This advisory is only for the projects and directories listed below. "
             "Ignore prior session context about any other project unless it is "
             "explicitly listed in the current projects-in-scope section."
+        ),
+        (
+            "Treat this as a fresh single-turn advisory. Ignore unfinished work, "
+            "tool chatter, reminders, draft content, and follow-up questions from "
+            "earlier turns in this session."
+        ),
+        (
+            "Return only the final Markdown answer for the current task. Do not add "
+            "a preamble, do not describe which tools you might use, and do not ask "
+            "what to do next."
         ),
         output_contract,
         "## Projects In Scope",
@@ -682,6 +716,66 @@ def _parse_cli_result(
     return (session_id, response_text, error_text)
 
 
+def _expected_markdown_headings(output_contract: str) -> tuple[str, ...]:
+    headings: list[str] = []
+    for line in output_contract.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            headings.append(stripped)
+    return tuple(headings)
+
+
+def _strip_outer_markdown_fence(output_text: str) -> str:
+    lines = output_text.strip().splitlines()
+    if len(lines) < 3:
+        return output_text.strip()
+    first_line = lines[0].strip()
+    last_line = lines[-1].strip()
+    if not first_line.startswith("```") or last_line != "```":
+        return output_text.strip()
+    return "\n".join(lines[1:-1]).strip()
+
+
+def build_output_validator(output_contract: str) -> Callable[[str], str]:
+    expected_headings = _expected_markdown_headings(output_contract)
+
+    def validate(output_text: str) -> str:
+        stripped_output = _strip_outer_markdown_fence(output_text)
+        if not stripped_output:
+            return "Gemini returned empty output."
+
+        nonempty_lines = [line.strip() for line in stripped_output.splitlines() if line.strip()]
+        if not nonempty_lines:
+            return "Gemini returned empty output."
+
+        if expected_headings:
+            expected_first = expected_headings[0]
+            if nonempty_lines[0].casefold() != expected_first.casefold():
+                return (
+                    "Gemini output did not start with the required first heading "
+                    f"{expected_first}."
+                )
+
+            actual_headings = {
+                line.strip().casefold()
+                for line in stripped_output.splitlines()
+                if line.strip().startswith("## ")
+            }
+            missing = [
+                heading
+                for heading in expected_headings
+                if heading.casefold() not in actual_headings
+            ]
+            if missing:
+                return (
+                    "Gemini output did not follow the required section contract. Missing: "
+                    + ", ".join(missing)
+                )
+        return ""
+
+    return validate
+
+
 def _run_noninteractive_attempt(
     command: list[str], timeout_seconds: int, project_root: Path
 ) -> subprocess.CompletedProcess[str]:
@@ -711,6 +805,7 @@ def _run_headless(
     lane: str,
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
+    output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
     if not gemini:
@@ -738,8 +833,14 @@ def _run_headless(
                 project_roots,
             )
 
-        if result.returncode == 0 and response_text:
-            return subprocess.CompletedProcess(command, 0, response_text, "")
+        if result.returncode == 0:
+            validation_error = output_validator(response_text) if output_validator else ""
+            if validation_error:
+                if "--resume" in command:
+                    continue
+                return subprocess.CompletedProcess(command, 1, "", validation_error)
+            if response_text:
+                return subprocess.CompletedProcess(command, 0, response_text, "")
 
         combined_output = (error_text or _combined_result_output(result)).strip()
         if _should_retry_resume(command, combined_output):
@@ -1160,6 +1261,7 @@ def _saved_reusable_lane_session_id(
     lane: str,
     scope_root: Path | None = None,
     project_roots: tuple[Path, ...] | None = None,
+    output_validator: Callable[[str], str] | None = None,
 ) -> str:
     session_id = _saved_lane_session_id(
         project_root, lane, scope_root, project_roots
@@ -1171,6 +1273,8 @@ def _saved_reusable_lane_session_id(
         return ""
     outcome = _interactive_outcome(messages)
     if not outcome or outcome[0] != "success" or not outcome[1].strip():
+        return ""
+    if output_validator and output_validator(outcome[1].strip()):
         return ""
     return session_id
 
@@ -1592,13 +1696,14 @@ def _run_interactive(
     lane: str,
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
+    output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
     if not gemini:
         raise FileNotFoundError("gemini executable not found in PATH")
 
     session_id = _saved_reusable_lane_session_id(
-        project_root, lane, scope_root, project_roots
+        project_root, lane, scope_root, project_roots, output_validator
     )
     commands = [_interactive_command(gemini, prompt, session_id)]
     if session_id:
@@ -1623,8 +1728,14 @@ def _run_interactive(
                 project_roots,
             )
         combined_output = _combined_result_output(result)
-        if result.returncode == 0 and result.stdout.strip():
-            return result
+        if result.returncode == 0:
+            validation_error = output_validator(result.stdout.strip()) if output_validator else ""
+            if validation_error:
+                if "--resume" in command:
+                    continue
+                return subprocess.CompletedProcess(command, 1, "", validation_error)
+            if result.stdout.strip():
+                return result
         if _should_retry_resume(command, combined_output):
             continue
         return result
@@ -1642,6 +1753,7 @@ def run_gemini(
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
     runner_mode: str | None = None,
+    output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke Gemini CLI via the configured runner mode."""
     mode = configured_run_mode(runner_mode)
@@ -1653,6 +1765,7 @@ def run_gemini(
             lane=lane,
             scope_root=scope_root,
             project_roots=project_roots,
+            output_validator=output_validator,
         )
     return _run_interactive(
         prompt,
@@ -1661,6 +1774,7 @@ def run_gemini(
         lane=lane,
         scope_root=scope_root,
         project_roots=project_roots,
+        output_validator=output_validator,
     )
 
 
@@ -1755,6 +1869,7 @@ def run_advisory(
         output_contract_builder(args) if output_contract_builder else output_contract
     )
     assert resolved_output_contract is not None
+    output_validator = build_output_validator(resolved_output_contract)
 
     brief_text = brief_path.read_text(encoding="utf-8")
     prompt = build_prompt(
@@ -1778,6 +1893,7 @@ def run_advisory(
             scope_root=focus_root,
             project_roots=project_roots,
             runner_mode=args.runner_mode,
+            output_validator=output_validator,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)

@@ -45,6 +45,8 @@ Rules:
 - If the evidence is weak or incomplete, say so explicitly instead of pretending to know the root cause.
 - Prefer small, discriminating next checks over broad refactor suggestions.
 - Provide advice only. Do not propose editing files or applying patches.
+- Start the first line of your answer with `## Likely Causes`. Do not add a preamble, tool notes, or self-commentary before the required sections.
+- Do not ask what to do next, and do not describe which tools you intend to use.
 - If a section has nothing important, write "- none".
 - Keep the response concise and specific.
 - Do not exceed 300 words unless the failure is unusually complex."""

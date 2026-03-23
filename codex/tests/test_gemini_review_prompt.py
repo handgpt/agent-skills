@@ -24,12 +24,15 @@ class GeminiReviewPromptTests(unittest.TestCase):
         self.assertIn("dead, redundant, over-complicated, or safe to simplify", contract)
         self.assertIn("Prioritize correctness and behavioral risk first", contract)
         self.assertIn("preserves behavior, failure handling, and readability", contract)
+        self.assertIn("Start the first line of your answer with `## Top Findings`", contract)
+        self.assertIn("Do not ask what to do next", contract)
 
     def test_structural_output_contract_mentions_architecture_scope(self) -> None:
         contract = module.build_output_contract(Namespace(mode="structural"))
         self.assertIn("## Structural & Architectural Risks", contract)
         self.assertIn("This is structural mode", contract)
         self.assertIn("surrounding modules, sibling directories, ownership boundaries", contract)
+        self.assertIn("Start the first line of your answer with `## Top Findings`", contract)
 
     def test_skill_docs_describe_dead_code_bloat_and_structural_review(self) -> None:
         skill_text = (REVIEW_DIR / "SKILL.md").read_text(encoding="utf-8")

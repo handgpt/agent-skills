@@ -56,6 +56,8 @@ Rules:
 - Call out any mismatch between the stated plan and the referenced local paths.
 - Be concise and critical.
 - Provide advice only. Do not propose editing files or applying patches.
+- Start the first line of your answer with `## Verdict`. Do not add a preamble, tool notes, or self-commentary before the required sections.
+- Do not ask what to do next, and do not describe which tools you intend to use.
 - If a section has nothing important, write "- none".
 - Do not repeat the brief back verbatim.
 - If evidence from official docs or community practice is weak or conflicting, say so explicitly.

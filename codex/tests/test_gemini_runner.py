@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -211,6 +212,38 @@ class GeminiRunnerTests(unittest.TestCase):
                     "",
                 )
 
+    def test_saved_lane_session_id_rejects_stale_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            lane_state_path = home / ".gemini" / gemini_runner.LANE_SESSION_STATE_FILE
+            lane_state_path.parent.mkdir(parents=True, exist_ok=True)
+            stale_payload = {
+                f"{project_root.resolve()}::review::projects=.::scope=.": {
+                    "lane": "review",
+                    "projectRoot": str(project_root.resolve()),
+                    "scopeRoot": str(project_root.resolve()),
+                    "sessionId": "stale-session",
+                    "updatedAt": "2026-03-20T00:00:00+00:00",
+                }
+            }
+            lane_state_path.write_text(
+                json.dumps(stale_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            fake_now = datetime(2026, 3, 23, 0, 0, 0, tzinfo=timezone.utc)
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home), mock.patch(
+                "gemini_runner.configured_session_reuse_ttl_seconds", return_value=3600
+            ), mock.patch.object(gemini_runner, "datetime", wraps=datetime) as datetime_mock:
+                datetime_mock.now.return_value = fake_now
+                self.assertEqual(
+                    gemini_runner._saved_lane_session_id(project_root, "review"),
+                    "",
+                )
+
     def test_saved_lane_session_id_root_scope_reads_legacy_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             home = Path(tmp_dir)
@@ -221,7 +254,7 @@ class GeminiRunnerTests(unittest.TestCase):
                     "lane": "review",
                     "projectRoot": str(project_root.resolve()),
                     "sessionId": "legacy-session",
-                    "updatedAt": "2026-03-21T00:00:00+00:00",
+                    "updatedAt": "2026-03-23T00:00:00+00:00",
                 }
             }
             lane_state_path = home / ".gemini" / gemini_runner.LANE_SESSION_STATE_FILE
@@ -231,7 +264,9 @@ class GeminiRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home), mock.patch(
+                "gemini_runner.configured_session_reuse_ttl_seconds", return_value=999999
+            ):
                 self.assertEqual(
                     gemini_runner._saved_lane_session_id(project_root, "review"),
                     "legacy-session",
@@ -375,6 +410,38 @@ class GeminiRunnerTests(unittest.TestCase):
 
         self.assertEqual(success, ("s1", "done", ""))
         self.assertEqual(failure, ("s1", "", "ApiError: 429: Too Many Requests"))
+
+    def test_output_validator_rejects_preamble_before_first_heading(self) -> None:
+        validator = gemini_runner.build_output_validator(
+            "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
+        )
+
+        self.assertIn(
+            "did not start with the required first heading",
+            validator("Here is the review.\n\n## Top Findings\n- ok\n\n## Overall Assessment\nDone."),
+        )
+
+    def test_output_validator_accepts_matching_headings(self) -> None:
+        validator = gemini_runner.build_output_validator(
+            "## Likely Causes\n- bullet\n\n## Confidence\nOne short paragraph."
+        )
+
+        self.assertEqual(
+            validator("## Likely Causes\n- one\n\n## Confidence\nHigh."),
+            "",
+        )
+
+    def test_output_validator_accepts_outer_markdown_code_fence(self) -> None:
+        validator = gemini_runner.build_output_validator(
+            "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
+        )
+
+        self.assertEqual(
+            validator(
+                "```markdown\n## Top Findings\n- ok\n\n## Overall Assessment\nGood.\n```"
+            ),
+            "",
+        )
 
     def test_project_short_id_reads_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -569,6 +636,42 @@ class GeminiRunnerTests(unittest.TestCase):
 
             self.assertEqual(reusable, "session-ok")
             self.assertEqual(not_reusable, "")
+
+    def test_saved_reusable_lane_session_id_rejects_invalid_contract_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            _write_session_file(
+                home,
+                "proj-1",
+                _session_filename("bad", "session-bad"),
+                {
+                    "sessionId": "session-bad",
+                    "lastUpdated": "2026-03-23T03:00:00Z",
+                    "startTime": "2026-03-23T02:59:00Z",
+                    "messages": [
+                        {"type": "user", "content": "prompt"},
+                        {
+                            "type": "gemini",
+                            "content": "I will inspect the files now.",
+                        },
+                    ],
+                },
+            )
+
+            validator = gemini_runner.build_output_validator(
+                "## Likely Causes\n- bullet\n\n## Confidence\nOne short paragraph."
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                gemini_runner._remember_lane_session(project_root, "error", "session-bad")
+                reusable = gemini_runner._saved_reusable_lane_session_id(
+                    project_root, "error", output_validator=validator
+                )
+
+            self.assertEqual(reusable, "")
 
     def test_saved_reusable_lane_session_id_rejects_new_user_turn_in_new_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1266,6 +1369,111 @@ class GeminiRunnerTests(unittest.TestCase):
         remember_mock.assert_any_call(
             project_root, "review", "new-session", project_root, None
         )
+
+    def test_run_headless_retries_fresh_session_when_reused_output_violates_contract(
+        self,
+    ) -> None:
+        project_root = Path("/workspace")
+        invalid = subprocess.CompletedProcess(
+            ["gemini"],
+            0,
+            '{"session_id":"old-session","response":"I will inspect the files now."}',
+            "",
+        )
+        success = subprocess.CompletedProcess(
+            ["gemini"],
+            0,
+            '{"session_id":"new-session","response":"## Top Findings\\n- ok\\n\\n## Overall Assessment\\nGood."}',
+            "",
+        )
+        validator = gemini_runner.build_output_validator(
+            "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
+        )
+
+        with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
+            "gemini_runner._saved_lane_session_id", return_value="old-session"
+        ), mock.patch(
+            "gemini_runner._run_noninteractive_attempt", side_effect=[invalid, success]
+        ) as run_mock:
+            result = gemini_runner._run_headless(
+                "prompt",
+                30,
+                project_root,
+                lane="review",
+                scope_root=project_root,
+                output_validator=validator,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("## Top Findings", result.stdout)
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_run_headless_retries_fresh_session_when_reused_output_is_empty(
+        self,
+    ) -> None:
+        project_root = Path("/workspace")
+        empty = subprocess.CompletedProcess(
+            ["gemini"],
+            0,
+            '{"session_id":"old-session","response":""}',
+            "",
+        )
+        success = subprocess.CompletedProcess(
+            ["gemini"],
+            0,
+            '{"session_id":"new-session","response":"## Top Findings\\n- ok\\n\\n## Overall Assessment\\nGood."}',
+            "",
+        )
+        validator = gemini_runner.build_output_validator(
+            "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
+        )
+
+        with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
+            "gemini_runner._saved_lane_session_id", return_value="old-session"
+        ), mock.patch(
+            "gemini_runner._run_noninteractive_attempt", side_effect=[empty, success]
+        ) as run_mock:
+            result = gemini_runner._run_headless(
+                "prompt",
+                30,
+                project_root,
+                lane="review",
+                scope_root=project_root,
+                output_validator=validator,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("## Top Findings", result.stdout)
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_run_interactive_retries_fresh_session_when_reused_output_is_invalid(self) -> None:
+        project_root = Path("/workspace")
+        invalid = subprocess.CompletedProcess(["gemini"], 0, "I will inspect files.", "")
+        success = subprocess.CompletedProcess(
+            ["gemini"], 0, "## Top Findings\n- ok\n\n## Overall Assessment\nGood.", ""
+        )
+        validator = gemini_runner.build_output_validator(
+            "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
+        )
+
+        with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
+            "gemini_runner._saved_reusable_lane_session_id", return_value="old-session"
+        ), mock.patch(
+            "gemini_runner._run_interactive_attempt",
+            side_effect=[(invalid, "old-session"), (success, "new-session")],
+        ) as attempt_mock:
+            result = gemini_runner._run_interactive(
+                "prompt",
+                30,
+                project_root,
+                lane="review",
+                scope_root=project_root,
+                output_validator=validator,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("## Top Findings", result.stdout)
+        self.assertEqual(attempt_mock.call_count, 2)
 
     def test_build_prompt_hides_home_path_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
