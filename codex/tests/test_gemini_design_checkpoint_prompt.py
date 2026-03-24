@@ -28,7 +28,8 @@ class GeminiDesignCheckpointPromptTests(unittest.TestCase):
         self.assertIn("overall architecture and the module-level design", contract)
         self.assertIn("Seek disconfirming evidence", contract)
         self.assertIn("Treat a deviation from default best practice as justified only when", contract)
-        self.assertIn("Start the first line of your answer with `## Verdict`", contract)
+        self.assertIn("Prefer to start with `## Verdict`", contract)
+        self.assertIn("Do not narrate your inspection process", contract)
         self.assertIn("Do not ask what to do next", contract)
 
     def test_docs_require_official_and_community_context(self) -> None:

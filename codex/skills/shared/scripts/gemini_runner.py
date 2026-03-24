@@ -75,6 +75,32 @@ EXIT_RESUME_PROGRESS_NOTE = (
     "resuming the same session and continuing to wait."
 )
 RUN_MARKER_PREFIX = "cadv-"
+META_CHATTER_MARKERS = (
+    "what would you like",
+    "would you like me to",
+    "do you want me to",
+    "please tell me",
+    "let me know if you'd like",
+    "let me know if you would like",
+    "i will begin",
+    "i'll begin",
+    "i will start by",
+    "i'll start by",
+    "i will inspect",
+    "i'll inspect",
+    "i will search",
+    "i'll search",
+    "i will look",
+    "i'll look",
+    "i have begun",
+    "i've begun",
+    "i am currently reviewing",
+    "i'm currently reviewing",
+    "i am going to",
+    "i'm going to",
+    "i will now",
+    "i'll now",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -736,40 +762,88 @@ def _strip_outer_markdown_fence(output_text: str) -> str:
     return "\n".join(lines[1:-1]).strip()
 
 
-def build_output_validator(output_contract: str) -> Callable[[str], str]:
+def _looks_like_meta_chatter(output_text: str) -> bool:
+    lowered = output_text.strip().lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in META_CHATTER_MARKERS)
+
+
+def _normalize_advisory_output(
+    output_text: str, expected_headings: tuple[str, ...] = ()
+) -> str:
+    stripped_output = _strip_outer_markdown_fence(output_text)
+    if not stripped_output:
+        return ""
+
+    lines = stripped_output.splitlines()
+    if expected_headings:
+        expected_heading_set = {heading.casefold() for heading in expected_headings}
+        first_expected_heading_index = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.strip().casefold() in expected_heading_set
+            ),
+            None,
+        )
+        if first_expected_heading_index not in (None, 0):
+            prefix = "\n".join(lines[:first_expected_heading_index]).strip()
+            if prefix and _looks_like_meta_chatter(prefix):
+                lines = lines[first_expected_heading_index:]
+
+    if len(lines) > 1:
+        trailing_tail = "\n".join(lines[-3:]).strip()
+        if trailing_tail and _looks_like_meta_chatter(trailing_tail):
+            trimmed_lines = lines[:]
+            for index in range(max(0, len(lines) - 3), len(lines)):
+                if _looks_like_meta_chatter("\n".join(lines[index:]).strip()):
+                    trimmed_lines = lines[:index]
+                    break
+            lines = trimmed_lines
+
+    return "\n".join(lines).strip()
+
+
+def build_output_normalizer(output_contract: str) -> Callable[[str], str]:
     expected_headings = _expected_markdown_headings(output_contract)
 
+    def normalize(output_text: str) -> str:
+        return _normalize_advisory_output(output_text, expected_headings)
+
+    return normalize
+
+
+def build_output_validator(output_contract: str) -> Callable[[str], str]:
+    expected_headings = _expected_markdown_headings(output_contract)
+    normalize_output = build_output_normalizer(output_contract)
+
     def validate(output_text: str) -> str:
-        stripped_output = _strip_outer_markdown_fence(output_text)
+        stripped_output = normalize_output(output_text)
         if not stripped_output:
             return "Gemini returned empty output."
 
-        nonempty_lines = [line.strip() for line in stripped_output.splitlines() if line.strip()]
+        nonempty_lines = [
+            line.strip() for line in stripped_output.splitlines() if line.strip()
+        ]
         if not nonempty_lines:
             return "Gemini returned empty output."
 
-        if expected_headings:
-            expected_first = expected_headings[0]
-            if nonempty_lines[0].casefold() != expected_first.casefold():
-                return (
-                    "Gemini output did not start with the required first heading "
-                    f"{expected_first}."
-                )
+        if _looks_like_meta_chatter(stripped_output):
+            return "Gemini returned meta chatter instead of a final advisory."
 
+        if expected_headings:
             actual_headings = {
                 line.strip().casefold()
                 for line in stripped_output.splitlines()
                 if line.strip().startswith("## ")
             }
-            missing = [
-                heading
-                for heading in expected_headings
-                if heading.casefold() not in actual_headings
-            ]
-            if missing:
+            if actual_headings and not any(
+                heading.casefold() in actual_headings for heading in expected_headings
+            ):
                 return (
-                    "Gemini output did not follow the required section contract. Missing: "
-                    + ", ".join(missing)
+                    "Gemini output used headings from the wrong advisory shape "
+                    "and appears to belong to a different task."
                 )
         return ""
 
@@ -805,6 +879,7 @@ def _run_headless(
     lane: str,
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
+    output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
@@ -834,13 +909,22 @@ def _run_headless(
             )
 
         if result.returncode == 0:
-            validation_error = output_validator(response_text) if output_validator else ""
+            normalized_response = (
+                output_normalizer(response_text)
+                if output_normalizer
+                else response_text.strip()
+            )
+            validation_error = (
+                output_validator(normalized_response) if output_validator else ""
+            )
             if validation_error:
                 if "--resume" in command:
                     continue
                 return subprocess.CompletedProcess(command, 1, "", validation_error)
-            if response_text:
-                return subprocess.CompletedProcess(command, 0, response_text, "")
+            if normalized_response:
+                return subprocess.CompletedProcess(
+                    command, 0, normalized_response, ""
+                )
 
         combined_output = (error_text or _combined_result_output(result)).strip()
         if _should_retry_resume(command, combined_output):
@@ -1261,6 +1345,7 @@ def _saved_reusable_lane_session_id(
     lane: str,
     scope_root: Path | None = None,
     project_roots: tuple[Path, ...] | None = None,
+    output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> str:
     session_id = _saved_lane_session_id(
@@ -1272,9 +1357,14 @@ def _saved_reusable_lane_session_id(
     if not messages:
         return ""
     outcome = _interactive_outcome(messages)
-    if not outcome or outcome[0] != "success" or not outcome[1].strip():
+    if not outcome or outcome[0] != "success":
         return ""
-    if output_validator and output_validator(outcome[1].strip()):
+    normalized_output = (
+        output_normalizer(outcome[1]) if output_normalizer else outcome[1].strip()
+    )
+    if not normalized_output:
+        return ""
+    if output_validator and output_validator(normalized_output):
         return ""
     return session_id
 
@@ -1696,6 +1786,7 @@ def _run_interactive(
     lane: str,
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
+    output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
@@ -1703,7 +1794,12 @@ def _run_interactive(
         raise FileNotFoundError("gemini executable not found in PATH")
 
     session_id = _saved_reusable_lane_session_id(
-        project_root, lane, scope_root, project_roots, output_validator
+        project_root,
+        lane,
+        scope_root,
+        project_roots,
+        output_normalizer,
+        output_validator,
     )
     commands = [_interactive_command(gemini, prompt, session_id)]
     if session_id:
@@ -1729,13 +1825,20 @@ def _run_interactive(
             )
         combined_output = _combined_result_output(result)
         if result.returncode == 0:
-            validation_error = output_validator(result.stdout.strip()) if output_validator else ""
+            normalized_stdout = (
+                output_normalizer(result.stdout)
+                if output_normalizer
+                else result.stdout.strip()
+            )
+            validation_error = (
+                output_validator(normalized_stdout) if output_validator else ""
+            )
             if validation_error:
                 if "--resume" in command:
                     continue
                 return subprocess.CompletedProcess(command, 1, "", validation_error)
-            if result.stdout.strip():
-                return result
+            if normalized_stdout:
+                return subprocess.CompletedProcess(command, 0, normalized_stdout, "")
         if _should_retry_resume(command, combined_output):
             continue
         return result
@@ -1753,6 +1856,7 @@ def run_gemini(
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
     runner_mode: str | None = None,
+    output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke Gemini CLI via the configured runner mode."""
@@ -1765,6 +1869,7 @@ def run_gemini(
             lane=lane,
             scope_root=scope_root,
             project_roots=project_roots,
+            output_normalizer=output_normalizer,
             output_validator=output_validator,
         )
     return _run_interactive(
@@ -1774,6 +1879,7 @@ def run_gemini(
         lane=lane,
         scope_root=scope_root,
         project_roots=project_roots,
+        output_normalizer=output_normalizer,
         output_validator=output_validator,
     )
 
@@ -1869,6 +1975,7 @@ def run_advisory(
         output_contract_builder(args) if output_contract_builder else output_contract
     )
     assert resolved_output_contract is not None
+    output_normalizer = build_output_normalizer(resolved_output_contract)
     output_validator = build_output_validator(resolved_output_contract)
 
     brief_text = brief_path.read_text(encoding="utf-8")
@@ -1893,6 +2000,7 @@ def run_advisory(
             scope_root=focus_root,
             project_roots=project_roots,
             runner_mode=args.runner_mode,
+            output_normalizer=output_normalizer,
             output_validator=output_validator,
         )
     except FileNotFoundError as exc:

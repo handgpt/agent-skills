@@ -411,14 +411,16 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(success, ("s1", "done", ""))
         self.assertEqual(failure, ("s1", "", "ApiError: 429: Too Many Requests"))
 
-    def test_output_validator_rejects_preamble_before_first_heading(self) -> None:
+    def test_output_validator_accepts_preamble_before_first_heading(self) -> None:
         validator = gemini_runner.build_output_validator(
             "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
         )
 
-        self.assertIn(
-            "did not start with the required first heading",
-            validator("Here is the review.\n\n## Top Findings\n- ok\n\n## Overall Assessment\nDone."),
+        self.assertEqual(
+            validator(
+                "Here is the review.\n\n## Top Findings\n- ok\n\n## Overall Assessment\nDone."
+            ),
+            "",
         )
 
     def test_output_validator_accepts_matching_headings(self) -> None:
@@ -441,6 +443,38 @@ class GeminiRunnerTests(unittest.TestCase):
                 "```markdown\n## Top Findings\n- ok\n\n## Overall Assessment\nGood.\n```"
             ),
             "",
+        )
+
+    def test_output_normalizer_strips_leading_meta_preamble_before_heading(self) -> None:
+        normalizer = gemini_runner.build_output_normalizer(
+            "## Verdict\n- bullet\n\n## Recommendation\n- bullet"
+        )
+
+        self.assertEqual(
+            normalizer(
+                "I will inspect the files now.\n\n## Verdict\nLooks sound.\n\n## Recommendation\n- proceed"
+            ),
+            "## Verdict\nLooks sound.\n\n## Recommendation\n- proceed",
+        )
+
+    def test_output_validator_rejects_meta_chatter(self) -> None:
+        validator = gemini_runner.build_output_validator(
+            "## Likely Causes\n- bullet\n\n## Confidence\nOne short paragraph."
+        )
+
+        self.assertIn(
+            "meta chatter",
+            validator("I will inspect the files now and report back."),
+        )
+
+    def test_output_validator_rejects_wrong_heading_shape(self) -> None:
+        validator = gemini_runner.build_output_validator(
+            "## Verdict\nOne short paragraph.\n\n## Recommendation\n- bullet"
+        )
+
+        self.assertIn(
+            "wrong advisory shape",
+            validator("## Top Findings\n- one\n\n## Overall Assessment\nGood."),
         )
 
     def test_project_short_id_reads_registry(self) -> None:
@@ -1446,6 +1480,41 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertIn("## Top Findings", result.stdout)
         self.assertEqual(run_mock.call_count, 2)
 
+    def test_run_headless_returns_normalized_output(self) -> None:
+        project_root = Path("/workspace")
+        success = subprocess.CompletedProcess(
+            ["gemini"],
+            0,
+            '{"session_id":"new-session","response":"I will inspect the files now.\\n\\n## Verdict\\nLooks good.\\n\\n## Recommendation\\n- proceed"}',
+            "",
+        )
+        normalizer = gemini_runner.build_output_normalizer(
+            "## Verdict\nOne short paragraph.\n\n## Recommendation\n- bullet"
+        )
+        validator = gemini_runner.build_output_validator(
+            "## Verdict\nOne short paragraph.\n\n## Recommendation\n- bullet"
+        )
+
+        with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
+            "gemini_runner._saved_lane_session_id", return_value=""
+        ), mock.patch(
+            "gemini_runner._run_noninteractive_attempt", return_value=success
+        ):
+            result = gemini_runner._run_headless(
+                "prompt",
+                30,
+                project_root,
+                lane="design",
+                scope_root=project_root,
+                output_normalizer=normalizer,
+                output_validator=validator,
+            )
+
+        self.assertEqual(
+            result.stdout,
+            "## Verdict\nLooks good.\n\n## Recommendation\n- proceed",
+        )
+
     def test_run_interactive_retries_fresh_session_when_reused_output_is_invalid(self) -> None:
         project_root = Path("/workspace")
         invalid = subprocess.CompletedProcess(["gemini"], 0, "I will inspect files.", "")
@@ -1474,6 +1543,42 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("## Top Findings", result.stdout)
         self.assertEqual(attempt_mock.call_count, 2)
+
+    def test_run_interactive_returns_normalized_output(self) -> None:
+        project_root = Path("/workspace")
+        success = subprocess.CompletedProcess(
+            ["gemini"],
+            0,
+            "I will inspect the files now.\n\n## Likely Causes\n- config drift\n\n## Confidence\nMedium.",
+            "",
+        )
+        normalizer = gemini_runner.build_output_normalizer(
+            "## Likely Causes\n- bullet\n\n## Confidence\nOne short paragraph."
+        )
+        validator = gemini_runner.build_output_validator(
+            "## Likely Causes\n- bullet\n\n## Confidence\nOne short paragraph."
+        )
+
+        with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
+            "gemini_runner._saved_reusable_lane_session_id", return_value=""
+        ), mock.patch(
+            "gemini_runner._run_interactive_attempt",
+            return_value=(success, "new-session"),
+        ):
+            result = gemini_runner._run_interactive(
+                "prompt",
+                30,
+                project_root,
+                lane="error",
+                scope_root=project_root,
+                output_normalizer=normalizer,
+                output_validator=validator,
+            )
+
+        self.assertEqual(
+            result.stdout,
+            "## Likely Causes\n- config drift\n\n## Confidence\nMedium.",
+        )
 
     def test_build_prompt_hides_home_path_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

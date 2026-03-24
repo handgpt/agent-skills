@@ -24,7 +24,8 @@ class GeminiErrorAnalysisPromptTests(unittest.TestCase):
         self.assertIn("## Code Logic Errors", contract)
         self.assertIn("## Environmental Issues", contract)
         self.assertIn("If the evidence is weak or incomplete, say so explicitly", contract)
-        self.assertIn("Start the first line of your answer with `## Likely Causes`", contract)
+        self.assertIn("Prefer to start with `## Likely Causes`", contract)
+        self.assertIn("Do not narrate your inspection process", contract)
         self.assertIn("Do not ask what to do next", contract)
 
     def test_skill_docs_require_log_pruning(self) -> None:

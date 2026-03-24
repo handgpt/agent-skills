@@ -15,7 +15,7 @@ import gemini_runner  # noqa: E402
 
 ROLE_LINE = "You are an external code reviewer giving a second opinion to another coding agent."
 
-STANDARD_OUTPUT_CONTRACT = """Return Markdown using exactly these sections:
+STANDARD_OUTPUT_CONTRACT = """Return concise Markdown. Prefer these sections when practical:
 
 ## Top Findings
 - bullet
@@ -45,13 +45,15 @@ Rules:
 - Only call out a simplification when it preserves behavior, failure handling, and readability. Do not reward clever rewrites that increase risk.
 - Call out any mismatch between the review brief and the referenced local paths.
 - Provide advice only. Do not propose editing files or applying patches.
-- Start the first line of your answer with `## Top Findings`. Do not add a preamble, tool notes, or self-commentary before the required sections.
+- Prefer to start with `## Top Findings`, but if the formatting drifts slightly, still return a concise on-task advisory instead of meta commentary.
+- Avoid preambles, tool notes, and self-commentary before the main review content.
+- Do not narrate your inspection process, say that you are reviewing or inspecting files, or describe a plan you are about to execute.
 - Do not ask what to do next, and do not describe which tools you intend to use.
 - If a section has nothing important, write "- none".
 - Keep the response concise and specific.
 - Do not exceed 300 words unless the diff is unusually complex."""
 
-STRUCTURAL_OUTPUT_CONTRACT = """Return Markdown using exactly these sections:
+STRUCTURAL_OUTPUT_CONTRACT = """Return concise Markdown. Prefer these sections when practical:
 
 ## Top Findings
 - bullet
@@ -85,7 +87,9 @@ Rules:
 - If the provided context is too narrow for a confident structural conclusion, say so instead of inventing architecture issues.
 - Call out any mismatch between the review brief and the referenced local paths.
 - Provide advice only. Do not propose editing files or applying patches.
-- Start the first line of your answer with `## Top Findings`. Do not add a preamble, tool notes, or self-commentary before the required sections.
+- Prefer to start with `## Top Findings`, but if the formatting drifts slightly, still return a concise on-task advisory instead of meta commentary.
+- Avoid preambles, tool notes, and self-commentary before the main review content.
+- Do not narrate your inspection process, say that you are reviewing or inspecting files, or describe a plan you are about to execute.
 - Do not ask what to do next, and do not describe which tools you intend to use.
 - If a section has nothing important, write "- none".
 - Keep the response concise and specific.
