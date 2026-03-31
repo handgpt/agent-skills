@@ -74,8 +74,9 @@ for installed_cmd in "$TARGET_COMMANDS"/*.md; do
         continue
     fi
     if grep -q '\$AGENT_SKILLS_DIR' "$installed_cmd" 2>/dev/null; then
-        sed -i.bak "s|\\\$AGENT_SKILLS_DIR|$AGENT_SKILLS_PARENT|g" "$installed_cmd"
-        rm -f "${installed_cmd}.bak"
+        tmp_file="$(mktemp)"
+        sed "s|\\\$AGENT_SKILLS_DIR|$AGENT_SKILLS_PARENT|g" "$installed_cmd" > "$tmp_file"
+        mv "$tmp_file" "$installed_cmd"
     fi
 done
 
