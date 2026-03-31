@@ -26,10 +26,6 @@ GEMINI_MODEL_ENV_VAR = "CLAUDE_GEMINI_MODEL"
 DEFAULT_GEMINI_FLAGS = ("--approval-mode", "yolo")
 GEMINI_SANDBOX_ENV_VAR = "GEMINI_SANDBOX"
 GEMINI_SANDBOX_DISABLED_VALUE = "false"
-GEMINI_OUTPUT_FORMAT = "json"
-GEMINI_RUN_MODE_ENV_VAR = "CLAUDE_GEMINI_RUN_MODE"
-DEFAULT_GEMINI_RUN_MODE = "interactive"
-VALID_GEMINI_RUN_MODES = ("interactive", "headless")
 GEMINI_SESSION_TTL_ENV_VAR = "CLAUDE_GEMINI_SESSION_TTL_SECONDS"
 DEFAULT_SESSION_REUSE_TTL_SECONDS = 6 * 60 * 60
 LANE_SESSION_STATE_FILE = "claude-lane-sessions.json"
@@ -617,15 +613,6 @@ def configured_gemini_model() -> str:
     return model or DEFAULT_GEMINI_MODEL
 
 
-def configured_run_mode(explicit_mode: str | None = None) -> str:
-    candidate = (
-        explicit_mode or os.environ.get(GEMINI_RUN_MODE_ENV_VAR, DEFAULT_GEMINI_RUN_MODE)
-    ).strip()
-    if candidate not in VALID_GEMINI_RUN_MODES:
-        return DEFAULT_GEMINI_RUN_MODE
-    return candidate
-
-
 def _gemini_environment() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("TERM", "xterm-256color")
@@ -665,86 +652,6 @@ def _should_retry_resume(command: list[str], combined_output: str) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Gemini CLI headless non-interactive invocation
-# ---------------------------------------------------------------------------
-
-
-def _noninteractive_command(gemini: str, prompt: str, session_id: str) -> list[str]:
-    command = [
-        gemini,
-        *DEFAULT_GEMINI_FLAGS,
-        "--model",
-        configured_gemini_model(),
-        "--output-format",
-        GEMINI_OUTPUT_FORMAT,
-    ]
-    if session_id:
-        command.extend(["--resume", session_id])
-    command.append(_safe_prompt_argument(prompt))
-    return command
-
-
-def _extract_json_payload(raw_text: str) -> dict[str, object] | None:
-    stripped = raw_text.strip()
-    if not stripped:
-        return None
-
-    candidates: list[dict[str, object]] = []
-    decoder = json.JSONDecoder()
-    for start_index, character in enumerate(stripped):
-        if character != "{":
-            continue
-        try:
-            payload, end_index = decoder.raw_decode(stripped[start_index:])
-        except json.JSONDecodeError:
-            continue
-        trailing = stripped[start_index + end_index :].strip()
-        if isinstance(payload, dict) and not trailing:
-            candidates.append(payload)
-
-    for candidate in candidates:
-        if any(
-            key in candidate for key in ("session_id", "response", "error", "stats")
-        ):
-            return candidate
-    return None
-
-
-def _format_json_error(error_payload: object) -> str:
-    if isinstance(error_payload, str):
-        return error_payload.strip()
-    if not isinstance(error_payload, dict):
-        return ""
-
-    parts: list[str] = []
-    error_type = str(error_payload.get("type", "")).strip()
-    message = str(error_payload.get("message", "")).strip()
-    code = str(error_payload.get("code", "")).strip()
-    if error_type:
-        parts.append(error_type)
-    if code:
-        parts.append(code)
-    if message:
-        parts.append(message)
-    if parts:
-        return ": ".join(parts)
-    return json.dumps(error_payload, ensure_ascii=False)
-
-
-def _parse_cli_result(
-    result: subprocess.CompletedProcess[str],
-) -> tuple[str, str, str]:
-    payload = _extract_json_payload(result.stdout)
-    if payload is None:
-        return ("", "", "")
-
-    session_id = str(payload.get("session_id", "")).strip()
-    response = payload.get("response")
-    error = payload.get("error")
-    response_text = response.strip() if isinstance(response, str) else ""
-    error_text = _format_json_error(error)
-    return (session_id, response_text, error_text)
 
 
 def _expected_markdown_headings(output_contract: str) -> tuple[str, ...]:
@@ -853,97 +760,6 @@ def build_output_validator(output_contract: str) -> Callable[[str], str]:
         return ""
 
     return validate
-
-
-def _run_noninteractive_attempt(
-    command: list[str], timeout_seconds: int, project_root: Path
-) -> subprocess.CompletedProcess[str]:
-    env = _gemini_environment()
-    try:
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            cwd=str(project_root),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            check=False,
-        )
-    except OSError as exc:
-        if exc.errno == errno.E2BIG:
-            raise _raise_e2big(exc) from exc
-        raise
-
-
-def _run_headless(
-    prompt: str,
-    timeout_seconds: int,
-    project_root: Path,
-    *,
-    lane: str,
-    scope_root: Path,
-    project_roots: tuple[Path, ...] | None = None,
-    output_normalizer: Callable[[str], str] | None = None,
-    output_validator: Callable[[str], str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    gemini = shutil.which("gemini")
-    if not gemini:
-        raise FileNotFoundError("gemini executable not found in PATH")
-
-    session_id = _saved_lane_session_id(
-        project_root, lane, scope_root, project_roots
-    )
-    commands = [_noninteractive_command(gemini, prompt, session_id)]
-    if session_id:
-        commands.append(_noninteractive_command(gemini, prompt, ""))
-
-    last_result: subprocess.CompletedProcess[str] | None = None
-    for command in commands:
-        result = _run_noninteractive_attempt(command, timeout_seconds, project_root)
-        last_result = result
-
-        resolved_session_id, response_text, error_text = _parse_cli_result(result)
-        if resolved_session_id:
-            _remember_lane_session(
-                project_root,
-                lane,
-                resolved_session_id,
-                scope_root,
-                project_roots,
-            )
-
-        if result.returncode == 0:
-            normalized_response = (
-                output_normalizer(response_text)
-                if output_normalizer
-                else response_text.strip()
-            )
-            validation_error = (
-                output_validator(normalized_response) if output_validator else ""
-            )
-            if validation_error:
-                if "--resume" in command:
-                    continue
-                return subprocess.CompletedProcess(command, 1, "", validation_error)
-            if normalized_response:
-                return subprocess.CompletedProcess(
-                    command, 0, normalized_response, ""
-                )
-
-        combined_output = (error_text or _combined_result_output(result)).strip()
-        if _should_retry_resume(command, combined_output):
-            continue
-
-        return subprocess.CompletedProcess(
-            command,
-            result.returncode or 1,
-            response_text,
-            combined_output,
-        )
-
-    assert last_result is not None
-    return last_result
 
 
 # ---------------------------------------------------------------------------
@@ -1860,23 +1676,10 @@ def run_gemini(
     lane: str,
     scope_root: Path,
     project_roots: tuple[Path, ...] | None = None,
-    runner_mode: str | None = None,
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke Gemini CLI via the configured runner mode."""
-    mode = configured_run_mode(runner_mode)
-    if mode == "headless":
-        return _run_headless(
-            prompt,
-            timeout_seconds,
-            project_root,
-            lane=lane,
-            scope_root=scope_root,
-            project_roots=project_roots,
-            output_normalizer=output_normalizer,
-            output_validator=output_validator,
-        )
+    """Invoke Gemini CLI via interactive mode (gemini -i)."""
     return _run_interactive(
         prompt,
         timeout_seconds,
@@ -1919,15 +1722,6 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"End-to-end advisory timeout in seconds. Default: {DEFAULT_TIMEOUT_SECONDS}.",
-    )
-    parser.add_argument(
-        "--runner-mode",
-        choices=VALID_GEMINI_RUN_MODES,
-        default=None,
-        help=(
-            "Gemini runner mode. Defaults to the interactive runner unless "
-            f"{GEMINI_RUN_MODE_ENV_VAR} overrides it."
-        ),
     )
     return parser
 
@@ -2004,7 +1798,6 @@ def run_advisory(
             lane=lane,
             scope_root=focus_root,
             project_roots=project_roots,
-            runner_mode=args.runner_mode,
             output_normalizer=output_normalizer,
             output_validator=output_validator,
         )

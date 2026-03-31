@@ -80,7 +80,6 @@ All configuration is optional. The defaults work out of the box.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CLAUDE_GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model alias |
-| `CLAUDE_GEMINI_RUN_MODE` | `interactive` | `interactive` or `headless` |
 | `CLAUDE_GEMINI_SESSION_TTL_SECONDS` | `21600` | Session reuse TTL (6 hours) |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
