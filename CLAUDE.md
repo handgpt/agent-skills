@@ -41,9 +41,33 @@ Each sub-project should maintain its own pitfall notebook (`.claude-pitfalls.md`
 
 When a significant error is discovered and fixed, record it using the pitfall-notebook skill with the correct `--notebook-file` path for that project.
 
-## Gemini Advisory Best Practices
+## Codex Advisory Skills (Auto-Trigger)
 
-- Always set `--project-root` to the specific subdirectory being reviewed, not the workspace root, to prevent Gemini from browsing unrelated sibling directories.
-- Always verify Gemini findings against the actual code (grep, read) before acting on them. Gemini can hallucinate or misattribute code from other directories.
+The following Codex advisory skills should be used automatically without explicit user invocation when the triggering conditions are met. They mirror the Gemini skills but use the Codex CLI.
+
+### codex-review
+
+**Trigger:** Same as gemini-review. Can be used as an alternative or complement to gemini-review.
+
+- Uses `codex review` built-in subcommand with `--uncommitted`, `--base`, or `--commit` flags.
+- Default model is `gpt-5.4`.
+
+### codex-error-analysis
+
+**Trigger:** Same as gemini-error-analysis. Can be used as an alternative or complement.
+
+- Uses `codex exec` in read-only sandbox mode.
+
+### codex-design-checkpoint
+
+**Trigger:** Same as gemini-design-checkpoint. Can be used as an alternative or complement.
+
+- Uses `codex exec` in read-only sandbox mode.
+
+## Advisory Best Practices
+
+- Always set `--project-root` to the specific subdirectory being reviewed, not the workspace root, to prevent agents from browsing unrelated sibling directories.
+- Always verify advisory findings against the actual code (grep, read) before acting on them. External agents can hallucinate or misattribute code from other directories.
 - Add explicit scoping instructions in the review brief (e.g., "Only review files under X. Do NOT inspect Y.").
-- Default model is `gemini-3.1-pro-preview` with 1-hour timeout.
+- Default Gemini model is `gemini-3.1-pro-preview` with 1-hour timeout.
+- Default Codex model is `gpt-5.4` with 1-hour timeout.
