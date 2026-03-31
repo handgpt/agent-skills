@@ -37,6 +37,13 @@ One short paragraph.
 ## Recommendation
 - bullet
 
+## Sources & Verification
+For every best-practice claim or recommendation above, list:
+- The practice or claim
+- Source: official doc URL, community reference, or "unverified (training knowledge only)"
+- Whether the source is official guidance or community convention
+If no verification was possible for a claim, explicitly mark it as unverified.
+
 Rules:
 - You are running via Gemini CLI on the same machine as the local project files.
 - The current workspace root is listed below. Review only files and directories inside that workspace root.
@@ -46,6 +53,7 @@ Rules:
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
 - Explicitly judge whether the preferred direction follows current best practices; if it deviates, say whether the deviation is justified.
 - Treat a deviation from default best practice as justified only when the stated constraints or operating model clearly outweigh the normal best-practice tradeoffs.
+- For EVERY best-practice claim you make, verify it against official documentation or community sources. Do not rely solely on training knowledge. If you cannot verify, explicitly state "unverified".
 - Check both the overall architecture and the module-level design. A design is not "best practice" if individual modules look fine but the overall composition, boundaries, or ownership model are poor.
 - When the topic depends on external frameworks, APIs, infrastructure, or standards, consult official documentation and community experience before concluding.
 - Seek disconfirming evidence, not just supporting evidence, from official docs and community practice before endorsing the preferred direction.
@@ -56,6 +64,7 @@ Rules:
 - Call out any mismatch between the stated plan and the referenced local paths.
 - Be concise and critical.
 - Provide advice only. Do not propose editing files or applying patches.
+- The "## Sources & Verification" section is MANDATORY. Every recommendation in Verdict, Best-Practice Alignment, and Recommendation sections must have a corresponding entry in Sources & Verification.
 - Prefer to start with `## Verdict`, but if the formatting drifts slightly, still return a concise on-task advisory instead of meta commentary.
 - Avoid preambles, tool notes, and self-commentary before the main advisory content.
 - Do not narrate your inspection process, say that you are reviewing or inspecting files, or describe a plan you are about to execute.
@@ -63,7 +72,7 @@ Rules:
 - If a section has nothing important, write "- none".
 - Do not repeat the brief back verbatim.
 - If evidence from official docs or community practice is weak or conflicting, say so explicitly.
-- Do not exceed 300 words unless the brief is unusually complex."""
+- Do not exceed 400 words unless the brief is unusually complex."""
 
 
 def main() -> int:
