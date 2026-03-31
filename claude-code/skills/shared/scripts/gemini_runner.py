@@ -131,10 +131,15 @@ def detect_project_root() -> Path:
 
 
 def detect_workspace_root() -> Path:
-    """Prefer the nearest CLAUDE.md-scoped workspace root, then fall back to project root."""
+    """Prefer the nearest CLAUDE.md-scoped workspace root, then AGENTS.md, then project root."""
     cwd = Path.cwd().resolve()
+    # First pass: prefer CLAUDE.md as the primary workspace marker.
     for candidate in (cwd, *cwd.parents):
-        if (candidate / "CLAUDE.md").is_file() or (candidate / "AGENTS.md").is_file():
+        if (candidate / "CLAUDE.md").is_file():
+            return candidate
+    # Second pass: fall back to AGENTS.md for mixed-agent workspaces.
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / "AGENTS.md").is_file():
             return candidate
     return detect_project_root()
 
