@@ -68,7 +68,7 @@ fi
 
 # Resolve the skills directory path for use in commands.
 # Replace $AGENT_SKILLS_DIR placeholder in installed commands with the actual path.
-AGENT_SKILLS_PARENT="$(cd "$CLAUDE_CODE_DIR/../.." && pwd)"
+AGENT_SKILLS_PARENT="$(cd "$CLAUDE_CODE_DIR/.." && pwd)"
 for installed_cmd in "$TARGET_COMMANDS"/*.md; do
     if [[ ! -f "$installed_cmd" ]]; then
         continue
