@@ -61,7 +61,7 @@ The wrapper launches Gemini from the workspace root, sends the fully assembled p
 
 The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's workspace session file to detect when the current review turn is complete and recover the final answer.
 
-The shared runner defaults to `gemini-2.5-pro`. Override with `CLAUDE_GEMINI_MODEL` if needed.
+The shared runner defaults to `gemini-3.1-pro-preview`. Override with `CLAUDE_GEMINI_MODEL` if needed.
 
 ## Read The Output Correctly
 

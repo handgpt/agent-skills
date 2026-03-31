@@ -46,4 +46,4 @@ When a significant error is discovered and fixed, record it using the pitfall-no
 - Always set `--project-root` to the specific subdirectory being reviewed, not the workspace root, to prevent Gemini from browsing unrelated sibling directories.
 - Always verify Gemini findings against the actual code (grep, read) before acting on them. Gemini can hallucinate or misattribute code from other directories.
 - Add explicit scoping instructions in the review brief (e.g., "Only review files under X. Do NOT inspect Y.").
-- Default model is `gemini-2.5-pro` with 1-hour timeout.
+- Default model is `gemini-3.1-pro-preview` with 1-hour timeout.

@@ -49,7 +49,7 @@ python3 scripts/run_gemini_error_analysis.py \
 
 Attach only the few source files, config files, or log excerpts that matter.
 
-The shared runner defaults to `gemini-2.5-pro`. Override with `CLAUDE_GEMINI_MODEL` if needed.
+The shared runner defaults to `gemini-3.1-pro-preview`. Override with `CLAUDE_GEMINI_MODEL` if needed.
 
 ## Read The Output Correctly
 

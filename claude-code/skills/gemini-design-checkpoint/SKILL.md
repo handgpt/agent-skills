@@ -42,7 +42,7 @@ python3 scripts/run_gemini_design_check.py \
   --context-file path/to/doc-or-spec.md
 ```
 
-The shared runner defaults to `gemini-2.5-pro`. Override with `CLAUDE_GEMINI_MODEL` if needed.
+The shared runner defaults to `gemini-3.1-pro-preview`. Override with `CLAUDE_GEMINI_MODEL` if needed.
 
 ## Read The Output Correctly
 
