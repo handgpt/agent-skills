@@ -26,8 +26,6 @@ GEMINI_MODEL_ENV_VAR = "CLAUDE_GEMINI_MODEL"
 DEFAULT_GEMINI_FLAGS = ("--approval-mode", "yolo")
 GEMINI_SANDBOX_ENV_VAR = "GEMINI_SANDBOX"
 GEMINI_SANDBOX_DISABLED_VALUE = "false"
-GEMINI_SESSION_TTL_ENV_VAR = "CLAUDE_GEMINI_SESSION_TTL_SECONDS"
-DEFAULT_SESSION_REUSE_TTL_SECONDS = 6 * 60 * 60
 LANE_SESSION_STATE_FILE = "claude-lane-sessions.json"
 GEMINI_PROJECTS_FILE = "projects.json"
 GEMINI_TMP_DIRNAME = "tmp"
@@ -396,16 +394,6 @@ def _save_lane_state(payload: dict[str, object]) -> None:
     )
 
 
-def configured_session_reuse_ttl_seconds() -> int:
-    raw_value = os.environ.get(GEMINI_SESSION_TTL_ENV_VAR, "").strip()
-    if not raw_value:
-        return DEFAULT_SESSION_REUSE_TTL_SECONDS
-    try:
-        ttl_seconds = int(raw_value)
-    except ValueError:
-        return DEFAULT_SESSION_REUSE_TTL_SECONDS
-    return max(0, ttl_seconds)
-
 
 def _scope_key(project_root: Path, scope_root: Path | None = None) -> str:
     resolved_project_root = project_root.resolve()
@@ -448,9 +436,6 @@ def _lane_state_key(
     )
 
 
-def _legacy_lane_state_key(project_root: Path, lane: str) -> str:
-    return f"{project_root.resolve()}::{lane}"
-
 
 def _remember_lane_session(
     project_root: Path,
@@ -478,37 +463,6 @@ def _remember_lane_session(
     }
     _save_lane_state(payload)
 
-
-def _saved_lane_session_id(
-    project_root: Path,
-    lane: str,
-    scope_root: Path | None = None,
-    project_roots: tuple[Path, ...] | None = None,
-) -> str:
-    if not lane:
-        return ""
-    payload = _load_lane_state()
-    entry = payload.get(_lane_state_key(project_root, lane, scope_root, project_roots))
-    if (
-        not isinstance(entry, dict)
-        and _scope_key(project_root, scope_root) == "."
-        and _project_set_key(project_root, project_roots) == "."
-    ):
-        entry = payload.get(_legacy_lane_state_key(project_root, lane))
-    if not isinstance(entry, dict):
-        return ""
-    ttl_seconds = configured_session_reuse_ttl_seconds()
-    if ttl_seconds <= 0:
-        return ""
-    raw_updated_at = entry.get("updatedAt")
-    updated_at = _parse_iso_timestamp(raw_updated_at)
-    if raw_updated_at in (None, ""):
-        return str(entry.get("sessionId", "")).strip()
-    if updated_at is None:
-        return ""
-    if (datetime.now(timezone.utc) - updated_at).total_seconds() > ttl_seconds:
-        return ""
-    return str(entry.get("sessionId", "")).strip()
 
 
 # ---------------------------------------------------------------------------
