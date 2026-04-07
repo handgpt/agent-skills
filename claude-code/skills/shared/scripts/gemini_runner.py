@@ -42,16 +42,6 @@ INTERACTIVE_POLL_SECONDS = 1.0
 INTERACTIVE_SHUTDOWN_GRACE_SECONDS = 3.0
 JSON_READ_RETRY_COUNT = 3
 JSON_READ_RETRY_DELAY_SECONDS = 0.05
-RESUME_FALLBACK_MARKERS = (
-    "unknown option",
-    "unexpected argument",
-    "unknown argument",
-    "unknown flag",
-    "invalid session",
-    "session not found",
-    "could not find session",
-    "error resuming session",
-)
 INTERACTIVE_ERROR_MARKERS = (
     "429",
     "too many requests",
@@ -645,12 +635,6 @@ def _trim_output_tail(current: str, addition: str) -> str:
     return combined[-MAX_PTY_OUTPUT_CHARS:]
 
 
-def _should_retry_resume(command: list[str], combined_output: str) -> bool:
-    lowered = combined_output.lower()
-    return "--resume" in command and any(
-        marker in lowered for marker in RESUME_FALLBACK_MARKERS
-    )
-
 
 
 
@@ -1161,34 +1145,6 @@ def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
     return False
 
 
-def _saved_reusable_lane_session_id(
-    project_root: Path,
-    lane: str,
-    scope_root: Path | None = None,
-    project_roots: tuple[Path, ...] | None = None,
-    output_normalizer: Callable[[str], str] | None = None,
-    output_validator: Callable[[str], str] | None = None,
-) -> str:
-    session_id = _saved_lane_session_id(
-        project_root, lane, scope_root, project_roots
-    )
-    if not session_id:
-        return ""
-    messages = _merged_session_messages(project_root, session_id)
-    if not messages:
-        return ""
-    outcome = _interactive_outcome(messages)
-    if not outcome or outcome[0] != "success":
-        return ""
-    normalized_output = (
-        output_normalizer(outcome[1]) if output_normalizer else outcome[1].strip()
-    )
-    if not normalized_output:
-        return ""
-    if output_validator and output_validator(normalized_output):
-        return ""
-    return session_id
-
 
 def _normalized_prompt_text(text: str) -> str:
     return text.strip()
@@ -1614,58 +1570,38 @@ def _run_interactive(
     if not gemini:
         raise FileNotFoundError("gemini executable not found in PATH")
 
-    session_id = _saved_reusable_lane_session_id(
+    # Never reuse sessions via --resume. Session reuse causes empty responses
+    # and stale-context contamination when different advisory briefs are routed
+    # to the same session. Always start a fresh session.
+    command = _interactive_command(gemini, prompt, "")
+    result, resolved_session_id = _run_interactive_attempt(
+        command,
+        timeout_seconds,
         project_root,
-        lane,
-        scope_root,
-        project_roots,
-        output_normalizer,
-        output_validator,
+        resumed_session_id="",
     )
-    commands = [_interactive_command(gemini, prompt, session_id)]
-    if session_id:
-        commands.append(_interactive_command(gemini, prompt, ""))
-
-    last_result: subprocess.CompletedProcess[str] | None = None
-    for command in commands:
-        resumed_session_id = session_id if "--resume" in command else ""
-        result, resolved_session_id = _run_interactive_attempt(
-            command,
-            timeout_seconds,
+    if resolved_session_id:
+        _remember_lane_session(
             project_root,
-            resumed_session_id=resumed_session_id,
+            lane,
+            resolved_session_id,
+            scope_root,
+            project_roots,
         )
-        last_result = result
-        if resolved_session_id:
-            _remember_lane_session(
-                project_root,
-                lane,
-                resolved_session_id,
-                scope_root,
-                project_roots,
-            )
-        combined_output = _combined_result_output(result)
-        if result.returncode == 0:
-            normalized_stdout = (
-                output_normalizer(result.stdout)
-                if output_normalizer
-                else result.stdout.strip()
-            )
-            validation_error = (
-                output_validator(normalized_stdout) if output_validator else ""
-            )
-            if validation_error:
-                if "--resume" in command:
-                    continue
-                return subprocess.CompletedProcess(command, 1, "", validation_error)
-            if normalized_stdout:
-                return subprocess.CompletedProcess(command, 0, normalized_stdout, "")
-        if _should_retry_resume(command, combined_output):
-            continue
-        return result
-
-    assert last_result is not None
-    return last_result
+    if result.returncode == 0:
+        normalized_stdout = (
+            output_normalizer(result.stdout)
+            if output_normalizer
+            else result.stdout.strip()
+        )
+        validation_error = (
+            output_validator(normalized_stdout) if output_validator else ""
+        )
+        if validation_error:
+            return subprocess.CompletedProcess(command, 1, "", validation_error)
+        if normalized_stdout:
+            return subprocess.CompletedProcess(command, 0, normalized_stdout, "")
+    return result
 
 
 def run_gemini(
