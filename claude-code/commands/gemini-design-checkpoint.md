@@ -32,7 +32,7 @@ This checkpoint explicitly tests whether the preferred direction follows current
      --project-root <path/to/project> \
      --brief-file /tmp/design-brief.md \
      --context-file <path/to/doc-or-spec.md> \
-     --output-file /tmp/gemini-design-output.md
+     --output-file /tmp/gemini-design-$(date +%s).md
    ```
 
 4. **Read the output correctly.**

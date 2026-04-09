@@ -30,7 +30,7 @@ Get a bounded Gemini debugging opinion when stuck on a real blocker. Treat the o
      --project-root <path/to/project> \
      --brief-file /tmp/error-brief.md \
      --context-file <path/to/relevant/file-or-log> \
-     --output-file /tmp/gemini-error-output.md
+     --output-file /tmp/gemini-error-$(date +%s).md
    ```
 
 5. **Read the output correctly.**

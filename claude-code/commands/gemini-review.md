@@ -27,7 +27,7 @@ Get a bounded Gemini review after code changes are complete. Treat the output as
      --project-root <path/to/project> \
      --brief-file /tmp/review-brief.md \
      --context-file <path/to/changed/file> \
-     --output-file /tmp/gemini-review-output.md
+     --output-file /tmp/gemini-review-$(date +%s).md
    ```
 
    For structural mode (shared modules, public interfaces, cross-module changes):
@@ -38,7 +38,7 @@ Get a bounded Gemini review after code changes are complete. Treat the output as
      --project-root <path/to/project> \
      --brief-file /tmp/review-brief.md \
      --context-file <path/to/changed/file> \
-     --output-file /tmp/gemini-review-output.md
+     --output-file /tmp/gemini-review-$(date +%s).md
    ```
 
    Set `AGENT_SKILLS_DIR` to the `agent-skills` directory path, or use the absolute path directly.
