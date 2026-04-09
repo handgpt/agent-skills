@@ -29,7 +29,8 @@ Get a bounded Gemini debugging opinion when stuck on a real blocker. Treat the o
    python3 $AGENT_SKILLS_DIR/claude-code/skills/gemini-error-analysis/scripts/run_gemini_error_analysis.py \
      --project-root <path/to/project> \
      --brief-file /tmp/error-brief.md \
-     --context-file <path/to/relevant/file-or-log>
+     --context-file <path/to/relevant/file-or-log> \
+     --output-file /tmp/gemini-error-output.md
    ```
 
 5. **Read the output correctly.**

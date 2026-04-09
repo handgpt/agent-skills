@@ -31,7 +31,8 @@ This checkpoint explicitly tests whether the preferred direction follows current
    python3 $AGENT_SKILLS_DIR/claude-code/skills/gemini-design-checkpoint/scripts/run_gemini_design_check.py \
      --project-root <path/to/project> \
      --brief-file /tmp/design-brief.md \
-     --context-file <path/to/doc-or-spec.md>
+     --context-file <path/to/doc-or-spec.md> \
+     --output-file /tmp/gemini-design-output.md
    ```
 
 4. **Read the output correctly.**

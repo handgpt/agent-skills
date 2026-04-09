@@ -1613,6 +1613,15 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"End-to-end advisory timeout in seconds. Default: {DEFAULT_TIMEOUT_SECONDS}.",
     )
+    parser.add_argument(
+        "--output-file",
+        default=None,
+        help=(
+            "Write all output (stdout and stderr) to this file instead of the console. "
+            "The file is written in real-time (line-buffered) so progress can be "
+            "monitored with tail -f."
+        ),
+    )
     return parser
 
 
@@ -1643,6 +1652,43 @@ def run_advisory(
         configure_parser(parser)
     args = parser.parse_args(argv)
 
+    # Redirect all output to file if --output-file is specified.
+    output_handle = None
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    if args.output_file:
+        output_path = Path(args.output_file).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_handle = open(output_path, "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+        sys.stdout = output_handle
+        sys.stderr = output_handle
+
+    try:
+        return _run_advisory_inner(
+            args=args,
+            role_line=role_line,
+            label=label,
+            lane=lane,
+            output_contract=output_contract,
+            output_contract_builder=output_contract_builder,
+        )
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        if output_handle is not None:
+            output_handle.close()
+
+
+def _run_advisory_inner(
+    *,
+    args: argparse.Namespace,
+    role_line: str,
+    label: str,
+    lane: str,
+    output_contract: str | None = None,
+    output_contract_builder: Callable[[argparse.Namespace], str] | None = None,
+) -> int:
+    """Core advisory logic, called by run_advisory after output redirection."""
     brief_path = Path(args.brief_file).expanduser().resolve()
     if not brief_path.is_file():
         print(f"Brief file not found: {_tilde_path(brief_path)}", file=sys.stderr)
