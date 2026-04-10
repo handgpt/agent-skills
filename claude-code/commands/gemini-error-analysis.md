@@ -33,13 +33,33 @@ Get a bounded Gemini debugging opinion when stuck on a real blocker. Treat the o
      --output-file /tmp/gemini-error-$(date +%s).md
    ```
 
-   **Real-time monitoring options:**
-   - `--output-file` (default): line-buffered file, monitor with
-     `tail -f /tmp/gemini-error-*.md`.
-   - **Monitor tool** (Claude Code v2.1.98+): run the same command via the
-     `Monitor` built-in tool so Claude sees each output line in conversation.
-   - `--daemon` (POSIX, advanced): detach and run in the background. Requires
-     `--output-file`. Useful when triggered from a hook that should not block.
+   **How Claude should wait for the diagnostic (precedence order):**
+
+   1. **`Monitor` built-in tool** — *first choice when available.* Claude
+      Code v2.1.98+ in interactive mode exposes a `Monitor` tool that runs
+      a command in the background and feeds each stdout line into the
+      conversation as it arrives. Not available on Bedrock, Vertex AI, or
+      Foundry, and not exposed in headless / Agent SDK / non-interactive
+      mode (check whether `Monitor` is in your tool list before assuming).
+   2. **`run_in_background` + `<task-notification>` + `Read`** — *correct
+      fallback when `Monitor` is unavailable.* Run the runner with
+      `--daemon` inside a `Bash` call that uses `run_in_background: true`.
+      The harness returns a `task_id` and an output file path immediately,
+      then sends a `<task-notification>` when the background command
+      finishes. Do other useful work (or stay idle) until the notification;
+      on notification, `Read` the output file. This is the canonical
+      async pattern in non-interactive mode.
+   3. **`tail -f` on `--output-file`** — *interactive humans only.* Useful
+      when a human is watching the diagnostic live in a terminal.
+
+   ❌ **Anti-pattern — never do this:**
+
+   ```bash
+   # WRONG. Wastes context and blocks the foreground bash thread.
+   while kill -0 $DAEMON_PID 2>/dev/null; do sleep 30; done
+   ```
+
+   Use option 2 above instead — it is event-driven, not poll-driven.
 
    **OpenTelemetry**: when `TRACEPARENT` is set (Claude Code OTel tracing
    enabled), the runner emits a `gemini.advisory.error_analysis` span parented

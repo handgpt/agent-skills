@@ -43,17 +43,50 @@ Get a bounded Gemini review after code changes are complete. Treat the output as
 
    Set `AGENT_SKILLS_DIR` to the `agent-skills` directory path, or use the absolute path directly.
 
-   **Real-time monitoring options:**
-   - `--output-file` (default for this skill): file is line-buffered, monitor with
-     `tail -f /tmp/gemini-review-*.md`. Works on every Claude Code version.
-   - **Monitor tool** (Claude Code v2.1.98+): instead of `tail -f`, ask Claude to
-     run the same command via the `Monitor` built-in tool. Each output line is fed
-     back into the conversation in real time so the LLM can react to progress
-     mid-call. Use this when you want Claude itself to watch the review.
-   - `--daemon` (POSIX, advanced): detach from the terminal and run in the
-     background. The parent prints the daemon PID and exits 0; the actual review
-     is written to `--output-file`. Useful when invoked from a hook or wrapper
-     that should not block on a 30+ minute review. Requires `--output-file`.
+   **How Claude should wait for the review (precedence order):**
+
+   1. **`Monitor` built-in tool** — *first choice when available.* Claude Code
+      v2.1.98+ in interactive mode exposes a `Monitor` tool that runs a
+      command in the background and feeds each stdout line into the
+      conversation as it arrives. Ask Claude to run the runner via `Monitor`
+      and Claude will react to progress mid-call without polling. Not
+      available on Amazon Bedrock, Google Vertex AI, or Microsoft Foundry,
+      and not exposed in headless / Agent SDK / non-interactive mode (check
+      whether `Monitor` is in your tool list before assuming).
+   2. **`run_in_background` + `<task-notification>` + `Read`** — *correct
+      fallback when `Monitor` is unavailable.* Run the runner with
+      `--daemon` (or `--output-file` + appending `&`) inside a `Bash` call
+      that uses `run_in_background: true`. The harness returns a `task_id`
+      and an output file path immediately, then sends a `<task-notification>`
+      when the background command finishes. While waiting, Claude should do
+      other useful work (or simply stay idle); on notification, `Read` the
+      output file. This is the canonical async pattern in non-interactive
+      mode and is documented in the deprecated `TaskOutput` tool's own
+      description ("Prefer using the Read tool on the task's output file
+      path instead").
+   3. **`tail -f` on `--output-file`** — *interactive humans only.* Useful
+      when a human is watching the review live in a terminal. Claude should
+      not do this from inside a chat turn.
+
+   ❌ **Anti-pattern — never do this:**
+
+   ```bash
+   # WRONG. Wastes context, blocks the foreground bash thread,
+   # and produces no useful information per loop iteration.
+   while kill -0 $DAEMON_PID 2>/dev/null; do sleep 30; done
+   ```
+
+   This pattern shows up when Claude has neither `Monitor` nor a clear
+   mental model of `run_in_background` + `<task-notification>`. Use option
+   2 above instead — it is event-driven, not poll-driven.
+
+   **Argument flags reference:**
+   - `--output-file <path>`: write all output (stdout + stderr) to a
+     line-buffered file instead of the console. Required for `--daemon`.
+   - `--daemon` (POSIX only): detach from the controlling terminal via
+     POSIX double-fork; the parent prints the real daemon PID and exits 0.
+     Combine with `--output-file` and either `run_in_background: true`
+     (preferred) or shell `&` backgrounding (interactive humans only).
 
    **OpenTelemetry**: if Claude Code's OTel tracing is enabled, the runner
    automatically detects the `TRACEPARENT` environment variable and emits a
