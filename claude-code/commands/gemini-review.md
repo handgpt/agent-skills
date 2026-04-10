@@ -43,6 +43,23 @@ Get a bounded Gemini review after code changes are complete. Treat the output as
 
    Set `AGENT_SKILLS_DIR` to the `agent-skills` directory path, or use the absolute path directly.
 
+   **Real-time monitoring options:**
+   - `--output-file` (default for this skill): file is line-buffered, monitor with
+     `tail -f /tmp/gemini-review-*.md`. Works on every Claude Code version.
+   - **Monitor tool** (Claude Code v2.1.98+): instead of `tail -f`, ask Claude to
+     run the same command via the `Monitor` built-in tool. Each output line is fed
+     back into the conversation in real time so the LLM can react to progress
+     mid-call. Use this when you want Claude itself to watch the review.
+   - `--daemon` (POSIX, advanced): detach from the terminal and run in the
+     background. The parent prints the daemon PID and exits 0; the actual review
+     is written to `--output-file`. Useful when invoked from a hook or wrapper
+     that should not block on a 30+ minute review. Requires `--output-file`.
+
+   **OpenTelemetry**: if Claude Code's OTel tracing is enabled, the runner
+   automatically detects the `TRACEPARENT` environment variable and emits a
+   child span (`gemini.advisory.review`) under Claude's trace tree. Requires
+   `opentelemetry-api` to be importable; otherwise it is silently skipped.
+
 4. **Read the output correctly.**
    - Expect findings-first output: top findings, regression risks, missing tests, things to verify, and overall assessment.
    - In structural mode, expect an additional `Structural & Architectural Risks` section.

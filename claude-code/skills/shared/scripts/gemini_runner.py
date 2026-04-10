@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
@@ -85,6 +86,166 @@ META_CHATTER_MARKERS = (
     "i will now",
     "i'll now",
 )
+
+
+# ---------------------------------------------------------------------------
+# Daemon mode
+# ---------------------------------------------------------------------------
+
+
+def _daemonize(output_path: Path) -> None:
+    """Detach the current process from the controlling terminal.
+
+    Uses the standard double-fork idiom so the daemon survives parent exit
+    and is reparented to init/launchd. Only available on POSIX platforms;
+    raises ``RuntimeError`` on Windows.
+
+    Communication flow:
+    - A pipe is created before the first fork. The grandchild writes its own
+      PID to the pipe, and the original parent reads it before printing and
+      exiting. Without this hop, the parent would only know the first
+      child's PID, which exits immediately during the double-fork, so any
+      wrapper trying to track or kill the daemon would target a dead or
+      reused PID.
+    - The original working directory is intentionally preserved (no
+      ``os.chdir("/")``) because the advisory runner resolves relative
+      ``--brief-file``, ``--context-file``, and ``--project-root`` paths
+      against ``Path.cwd()`` downstream; relocating to ``/`` would break
+      those lookups and prevent workspace/git-root detection.
+    - Stdin is redirected to ``/dev/null``; stdout and stderr are redirected
+      to ``output_path`` (line-buffered by the caller via ``--output-file``)
+      so ``tail -f`` keeps working after the parent has returned.
+
+    The parent process prints the daemon PID and exits with code 0. The
+    grandchild returns from this function to continue execution.
+    """
+    if os.name != "posix":
+        raise RuntimeError("--daemon mode is only supported on POSIX systems")
+
+    # Pipe for grandchild -> original parent PID communication.
+    read_fd, write_fd = os.pipe()
+
+    # First fork.
+    pid = os.fork()
+    if pid > 0:
+        # Original parent: read the real daemon PID from the pipe, print it,
+        # reap the first child to avoid a zombie, and exit.
+        os.close(write_fd)
+        try:
+            raw = os.read(read_fd, 32).decode("ascii", errors="replace").strip()
+        finally:
+            os.close(read_fd)
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+        try:
+            grandchild_pid = int(raw)
+        except ValueError:
+            grandchild_pid = -1
+        print(
+            f"Gemini advisory daemon started: pid={grandchild_pid} "
+            f"output={output_path}"
+        )
+        sys.stdout.flush()
+        os._exit(0)
+
+    # First child: close the read end, detach from the controlling terminal,
+    # then second fork.
+    os.close(read_fd)
+    os.setsid()
+
+    pid = os.fork()
+    if pid > 0:
+        # First child exits; grandchild is reparented to init/launchd.
+        os._exit(0)
+
+    # Grandchild: announce real PID back to the original parent, then close
+    # the write end.
+    try:
+        os.write(write_fd, str(os.getpid()).encode("ascii"))
+    finally:
+        os.close(write_fd)
+
+    # Preserve cwd (see docstring). Reset umask for well-defined file perms.
+    os.umask(0)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    # Redirect stdio at the kernel level via dup2. Guard against the rare
+    # case where os.open returns one of fds 0/1/2 (possible if the caller
+    # invoked the script with standard file descriptors already closed), in
+    # which case we must not close the very fd we just duplicated onto.
+    devnull_fd = os.open(os.devnull, os.O_RDONLY)
+    out_fd = os.open(
+        str(output_path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o644,
+    )
+    os.dup2(devnull_fd, 0)
+    os.dup2(out_fd, 1)
+    os.dup2(out_fd, 2)
+    if devnull_fd > 2:
+        os.close(devnull_fd)
+    if out_fd > 2:
+        os.close(out_fd)
+
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry TRACEPARENT propagation
+# ---------------------------------------------------------------------------
+
+
+def _otel_advisory_span(
+    *,
+    label: str,
+    lane: str,
+    brief_path: Path,
+):
+    """Return a context manager that emits an OTel child span if possible.
+
+    When the parent process (e.g. Claude Code's Bash tool with OTel tracing
+    enabled) sets the W3C ``TRACEPARENT`` environment variable and the
+    ``opentelemetry`` SDK is importable, this returns a span that parents
+    itself under the caller's trace tree. Otherwise it returns a no-op
+    context manager so the runner stays zero-config for users who don't run
+    OTel.
+    """
+    if not os.environ.get("TRACEPARENT"):
+        return contextlib.nullcontext()
+    try:
+        from opentelemetry import trace
+        from opentelemetry.propagate import extract
+    except Exception:
+        # ImportError is the common case, but any failure inside the OTel
+        # import chain (misconfigured SDK, broken plugin) must not crash
+        # the advisory runner. Degrade to no-op.
+        return contextlib.nullcontext()
+
+    try:
+        carrier = {"traceparent": os.environ["TRACEPARENT"]}
+        tracestate = os.environ.get("TRACESTATE")
+        if tracestate:
+            carrier["tracestate"] = tracestate
+        parent_ctx = extract(carrier)
+        tracer = trace.get_tracer("agent-skills.gemini_runner")
+        return tracer.start_as_current_span(
+            f"gemini.advisory.{lane}",
+            context=parent_ctx,
+            attributes={
+                "advisory.lane": lane,
+                "advisory.label": label,
+                "advisory.brief_file": str(brief_path),
+                "advisory.runner": "gemini_runner.py",
+            },
+        )
+    except Exception:
+        # Carrier parsing, tracer creation, or span start can fail with a
+        # misconfigured OTel SDK. Truly zero-config degradation means no
+        # exception ever escapes this helper.
+        return contextlib.nullcontext()
 
 
 # ---------------------------------------------------------------------------
@@ -1622,6 +1783,16 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
             "monitored with tail -f."
         ),
     )
+    parser.add_argument(
+        "--daemon",
+        action="store_true",
+        help=(
+            "Detach from the controlling terminal and run in the background "
+            "(POSIX only). Requires --output-file because stdio is closed. "
+            "The parent process prints the daemon PID and exits with code 0; "
+            "the actual advisory result is written to --output-file."
+        ),
+    )
     return parser
 
 
@@ -1652,26 +1823,55 @@ def run_advisory(
         configure_parser(parser)
     args = parser.parse_args(argv)
 
-    # Redirect all output to file if --output-file is specified.
-    output_handle = None
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    if args.output_file:
-        output_path = Path(args.output_file).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_handle = open(output_path, "w", encoding="utf-8", buffering=1)  # noqa: SIM115
-        sys.stdout = output_handle
-        sys.stderr = output_handle
-
-    try:
-        return _run_advisory_inner(
-            args=args,
-            role_line=role_line,
-            label=label,
-            lane=lane,
-            output_contract=output_contract,
-            output_contract_builder=output_contract_builder,
+    # --daemon requires --output-file because stdio is closed during detach.
+    if args.daemon and not args.output_file:
+        print(
+            "--daemon requires --output-file (stdio is closed during detach).",
+            file=sys.stderr,
         )
+        return 2
+
+    # Detach before any output redirection so the parent prints the PID to
+    # the original terminal and the grandchild owns the output file directly.
+    if args.daemon:
+        try:
+            _daemonize(Path(args.output_file).expanduser().resolve())
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        # Past this point we are inside the detached grandchild. Stdout and
+        # stderr already point at --output-file via dup2, so the Python-level
+        # redirection below is unnecessary. Skip it to avoid double-handling.
+        output_handle = None
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+    else:
+        # Redirect all output to file if --output-file is specified.
+        output_handle = None
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        if args.output_file:
+            output_path = Path(args.output_file).expanduser().resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_handle = open(  # noqa: SIM115
+                output_path, "w", encoding="utf-8", buffering=1
+            )
+            sys.stdout = output_handle
+            sys.stderr = output_handle
+
+    brief_path_for_span = Path(args.brief_file).expanduser().resolve()
+    try:
+        with _otel_advisory_span(
+            label=label, lane=lane, brief_path=brief_path_for_span
+        ):
+            return _run_advisory_inner(
+                args=args,
+                role_line=role_line,
+                label=label,
+                lane=lane,
+                output_contract=output_contract,
+                output_contract_builder=output_contract_builder,
+            )
     finally:
         sys.stdout = original_stdout
         sys.stderr = original_stderr

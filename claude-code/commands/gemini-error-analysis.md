@@ -33,6 +33,19 @@ Get a bounded Gemini debugging opinion when stuck on a real blocker. Treat the o
      --output-file /tmp/gemini-error-$(date +%s).md
    ```
 
+   **Real-time monitoring options:**
+   - `--output-file` (default): line-buffered file, monitor with
+     `tail -f /tmp/gemini-error-*.md`.
+   - **Monitor tool** (Claude Code v2.1.98+): run the same command via the
+     `Monitor` built-in tool so Claude sees each output line in conversation.
+   - `--daemon` (POSIX, advanced): detach and run in the background. Requires
+     `--output-file`. Useful when triggered from a hook that should not block.
+
+   **OpenTelemetry**: when `TRACEPARENT` is set (Claude Code OTel tracing
+   enabled), the runner emits a `gemini.advisory.error_analysis` span parented
+   to Claude's trace tree. Silently skipped if `opentelemetry-api` is not
+   installed.
+
 5. **Read the output correctly.**
    - Expect likely causes first, then code-logic vs environment separation, then next checks.
    - Prefer the smallest next checks that can disambiguate the root cause quickly.

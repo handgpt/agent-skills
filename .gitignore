@@ -1,1 +1,5 @@
 .DS_Store
+
+# install.sh output: slash commands with user-local absolute paths substituted
+# in. Never commit these — they are per-machine artifacts.
+.claude/

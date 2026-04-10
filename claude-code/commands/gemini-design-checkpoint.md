@@ -35,6 +35,19 @@ This checkpoint explicitly tests whether the preferred direction follows current
      --output-file /tmp/gemini-design-$(date +%s).md
    ```
 
+   **Real-time monitoring options:**
+   - `--output-file` (default): line-buffered file, monitor with
+     `tail -f /tmp/gemini-design-*.md`.
+   - **Monitor tool** (Claude Code v2.1.98+): run the same command via the
+     `Monitor` built-in tool so Claude sees each output line in conversation.
+   - `--daemon` (POSIX, advanced): detach and run in the background. Requires
+     `--output-file`. Useful when wrapping the runner in a hook or async job.
+
+   **OpenTelemetry**: when `TRACEPARENT` is set (Claude Code OTel tracing
+   enabled), the runner emits a `gemini.advisory.design` span parented to
+   Claude's trace tree. Silently skipped if `opentelemetry-api` is not
+   installed.
+
 4. **Read the output correctly.**
    - Expect verdict, best-practice alignment, system-level risks, module-level risks, alternatives, open questions, and recommendation.
    - Evaluate each point yourself. Accept, reject, or defer it explicitly.
