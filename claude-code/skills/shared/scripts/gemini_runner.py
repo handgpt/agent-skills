@@ -1045,6 +1045,83 @@ def _conversation_messages(conversation: dict[str, object]) -> list[dict[str, ob
     return [message for message in messages if isinstance(message, dict)]
 
 
+def _snapshot_preexisting_message_identities(project_root: Path) -> set[str]:
+    """Capture every ``_message_identity`` already present in the project's
+    Gemini chats dir at the moment this function is called.
+
+    Purpose: act as a hard baseline that downstream ``new_messages`` filtering
+    can subtract from the merged session messages after Gemini runs. This
+    prevents pre-existing history from a reused or stale chats file from
+    leaking into ``_interactive_outcome`` and being misreturned as this
+    invocation's result.
+
+    The snapshot is order-independent: it does NOT rely on
+    ``_merged_session_messages`` sort order (which uses ``float('inf')`` for
+    missing timestamps and can place old messages *after* a fresh anchor),
+    and it does NOT depend on the run marker appearing in the file yet.
+    Simply: whatever identities exist before we spawn Gemini cannot be
+    output from the Gemini invocation we are about to make.
+    """
+    chats_dir = _project_chats_dir(project_root)
+    if not chats_dir or not chats_dir.is_dir():
+        return set()
+    identities: set[str] = set()
+    for path in chats_dir.glob("session-*.json"):
+        conversation = _load_conversation(path)
+        if not conversation:
+            continue
+        for message in _conversation_messages(conversation):
+            identities.add(_message_identity(message))
+    return identities
+
+
+def _advisory_archive_stale_chats_enabled() -> bool:
+    """Whether to archive pre-existing session files before spawning Gemini."""
+    raw = os.environ.get(
+        "CLAUDE_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS", "1"
+    ).strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
+def _archive_stale_project_chats(project_root: Path) -> Path | None:
+    """Move every existing ``session-*.json`` out of the project chats dir
+    into a timestamped ``.advisory-archive-<UTC>/`` subdirectory so Gemini
+    CLI cannot auto-resume, append to, or otherwise cross-contaminate the
+    advisory invocation with stale conversations.
+
+    Returns the archive directory (for logging) or ``None`` if nothing was
+    moved. Best-effort: failures to move individual files are swallowed
+    because the snapshot-identity baseline is the authoritative defense;
+    the archive is only an extra structural safeguard.
+    """
+    chats_dir = _project_chats_dir(project_root)
+    if not chats_dir or not chats_dir.is_dir():
+        return None
+    existing = sorted(chats_dir.glob("session-*.json"))
+    if not existing:
+        return None
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_dir = chats_dir / f".advisory-archive-{timestamp}"
+    try:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    moved = False
+    for path in existing:
+        try:
+            path.rename(archive_dir / path.name)
+            moved = True
+        except OSError:
+            continue
+    if not moved:
+        try:
+            archive_dir.rmdir()
+        except OSError:
+            pass
+        return None
+    return archive_dir
+
+
 def _extract_text_from_content(content: object) -> str:
     if isinstance(content, str):
         return content
@@ -1499,13 +1576,21 @@ def _run_interactive_attempt(
     project_root: Path,
     *,
     resumed_session_id: str,
+    preexisting_identities: set[str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
-    baseline_message_keys: set[str] = set()
+    # Baseline = every message identity that existed BEFORE we spawned Gemini.
+    # This is the authoritative defense against session contamination: any
+    # message in ``_merged_session_messages`` whose identity is in the baseline
+    # MUST be historical (Gemini had not written it yet as of this invocation),
+    # so it is excluded from ``new_messages`` regardless of sort-order edge
+    # cases (e.g. ``float('inf')`` timestamps pushing old messages after our
+    # anchor in the merged list).
+    baseline_message_keys: set[str] = set(preexisting_identities or set())
     if resumed_session_id:
-        baseline_message_keys = {
+        baseline_message_keys.update(
             _message_identity(message)
             for message in _merged_session_messages(project_root, resumed_session_id)
-        }
+        )
     start_monotonic = time.monotonic()
     start_epoch = time.time()
     last_progress = start_monotonic
@@ -1688,12 +1773,39 @@ def _run_interactive(
     # Never reuse sessions via --resume. Session reuse causes empty responses
     # and stale-context contamination when different advisory briefs are routed
     # to the same session. Always start a fresh session.
+    #
+    # Even without --resume, contamination can still happen if Gemini CLI
+    # writes to (or the runner's session-file discovery picks up) a stale
+    # file in the shared project chats dir. Two structural defenses:
+    #
+    # 1. Archive any pre-existing ``session-*.json`` in the project chats dir
+    #    into a timestamped ``.advisory-archive-<UTC>/`` subdirectory so the
+    #    chats dir is empty when Gemini starts. Default on; opt out with
+    #    ``CLAUDE_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS=0`` (e.g. if the user
+    #    runs their own ``gemini -i`` concurrently in the same workspace and
+    #    does not want their history moved).
+    # 2. Snapshot every ``_message_identity`` that exists in the chats dir
+    #    at the moment we spawn Gemini, and use that as the authoritative
+    #    baseline downstream. Even if archiving was disabled or failed, any
+    #    message whose identity is in the snapshot MUST be historical and
+    #    therefore cannot be returned as this invocation's outcome.
+    if _advisory_archive_stale_chats_enabled():
+        archived = _archive_stale_project_chats(project_root)
+        if archived is not None:
+            print(
+                f"[Gemini archive] Archived stale chats to {archived}",
+                file=sys.stderr,
+                flush=True,
+            )
+    preexisting_identities = _snapshot_preexisting_message_identities(project_root)
+
     command = _interactive_command(gemini, prompt, "")
     result, resolved_session_id = _run_interactive_attempt(
         command,
         timeout_seconds,
         project_root,
         resumed_session_id="",
+        preexisting_identities=preexisting_identities,
     )
     if resolved_session_id:
         _remember_lane_session(
