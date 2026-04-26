@@ -961,11 +961,39 @@ def _project_chats_dir(project_root: Path) -> Path | None:
     return Path.home() / ".gemini" / GEMINI_TMP_DIRNAME / short_id / "chats"
 
 
-def _session_file_glob(session_id: str) -> str:
+SESSION_FILE_EXTENSIONS = (".json", ".jsonl")
+
+
+def _session_file_globs(session_id: str) -> list[str]:
+    """Return glob patterns that match session files for *session_id*.
+
+    Gemini CLI <= v0.38 writes ``session-<ts>-<shortid>.json`` (legacy JSON).
+    Gemini CLI >= v0.39 writes ``session-<ts>-<shortid>.jsonl`` (JSONL).
+    We must match both so that advisory parsing works regardless of the
+    installed CLI version.
+    """
     short_id = session_id.strip()[:8]
     if short_id:
-        return f"session-*-{short_id}.json"
-    return "session-*.json"
+        return [f"session-*-{short_id}{ext}" for ext in SESSION_FILE_EXTENSIONS]
+    return [f"session-*{ext}" for ext in SESSION_FILE_EXTENSIONS]
+
+
+def _all_session_file_globs() -> list[str]:
+    """Glob patterns matching *any* session file (both .json and .jsonl)."""
+    return [f"session-*{ext}" for ext in SESSION_FILE_EXTENSIONS]
+
+
+def _glob_session_files(directory: Path, patterns: list[str]) -> list[Path]:
+    """Collect session files matching any of *patterns*, deduplicated."""
+    seen: set[str] = set()
+    result: list[Path] = []
+    for pattern in patterns:
+        for path in directory.glob(pattern):
+            key = str(path)
+            if key not in seen:
+                seen.add(key)
+                result.append(path)
+    return result
 
 
 def _parse_iso_timestamp(raw_value: object) -> datetime | None:
@@ -994,6 +1022,96 @@ def _conversation_sort_key(path: Path, conversation: dict[str, object]) -> tuple
 
 
 def _load_conversation(path: Path) -> dict[str, object] | None:
+    """Load a session file as a conversation dict.
+
+    Handles both legacy single-JSON (``.json``) and the JSONL format
+    (``.jsonl``) introduced in Gemini CLI v0.39.  For JSONL, the first
+    line is partial metadata (``sessionId``, ``projectHash``, …) and
+    subsequent lines are either message records (have ``id``), metadata
+    updates (have ``$set``), or rewind markers (have ``$rewindTo``).
+    """
+    if path.suffix.lower() == ".jsonl":
+        return _load_jsonl_conversation(path)
+    return _load_legacy_json_conversation(path)
+
+
+def _load_jsonl_conversation(path: Path) -> dict[str, object] | None:
+    """Parse a Gemini CLI v0.39+ JSONL session file into a conversation dict.
+
+    Mirrors the record semantics of ``chatRecordingService.ts``:
+    - First line: partial metadata (``sessionId``, ``projectHash``, ``startTime``, …)
+    - ``{id, timestamp, type, content, …}``: message records
+    - ``{$set: {…}}``: metadata patch (``lastUpdated``, ``summary``, …)
+    - ``{$rewindTo: <id>}``: discard messages from *id* onward
+    """
+    for attempt in range(JSON_READ_RETRY_COUNT):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        metadata: dict[str, object] = {}
+        messages: list[dict[str, object]] = []
+        message_order: list[str] = []  # id → insertion order for rewind
+        hit_parse_error = False
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                # A partially-written trailing line is common during
+                # concurrent writes.  Stop parsing here but keep
+                # everything we've successfully read so far.
+                hit_parse_error = True
+                break
+            if not isinstance(record, dict):
+                continue
+            if "$rewindTo" in record:
+                rewind_id = str(record["$rewindTo"]).strip()
+                try:
+                    idx = message_order.index(rewind_id)
+                except ValueError:
+                    messages.clear()
+                    message_order.clear()
+                else:
+                    removed_ids = message_order[idx:]
+                    message_order = message_order[:idx]
+                    id_set = set(removed_ids)
+                    messages = [m for m in messages if str(m.get("id", "")) not in id_set]
+            elif "$set" in record:
+                patch = record["$set"]
+                if isinstance(patch, dict):
+                    metadata.update(patch)
+            elif "id" in record:
+                msg_id = str(record["id"]).strip()
+                # Replace if already present (same semantics as Map.set)
+                existing_idx = None
+                for i, m in enumerate(messages):
+                    if str(m.get("id", "")).strip() == msg_id:
+                        existing_idx = i
+                        break
+                if existing_idx is not None:
+                    messages[existing_idx] = record
+                else:
+                    messages.append(record)
+                    message_order.append(msg_id)
+            elif "sessionId" in record:
+                # Initial metadata line
+                metadata.update(record)
+        if not metadata.get("sessionId"):
+            # No metadata found — might be a transient IO issue.
+            if hit_parse_error and attempt + 1 < JSON_READ_RETRY_COUNT:
+                time.sleep(JSON_READ_RETRY_DELAY_SECONDS)
+                continue
+            return None
+        metadata["messages"] = messages
+        return metadata
+    return None
+
+
+def _load_legacy_json_conversation(path: Path) -> dict[str, object] | None:
+    """Load a legacy single-JSON session file (Gemini CLI <= v0.38)."""
     payload = _load_json_file(path)
     return payload if isinstance(payload, dict) else None
 
@@ -1025,7 +1143,7 @@ def _session_conversations_for_id(
         return []
 
     matches: list[tuple[tuple[float, str], Path, dict[str, object]]] = []
-    for path in chats_dir.glob(_session_file_glob(session_id)):
+    for path in _glob_session_files(chats_dir, _session_file_globs(session_id)):
         conversation = _load_conversation(path)
         if not conversation:
             continue
@@ -1066,7 +1184,7 @@ def _snapshot_preexisting_message_identities(project_root: Path) -> set[str]:
     if not chats_dir or not chats_dir.is_dir():
         return set()
     identities: set[str] = set()
-    for path in chats_dir.glob("session-*.json"):
+    for path in _glob_session_files(chats_dir, _all_session_file_globs()):
         conversation = _load_conversation(path)
         if not conversation:
             continue
@@ -1084,10 +1202,10 @@ def _advisory_archive_stale_chats_enabled() -> bool:
 
 
 def _archive_stale_project_chats(project_root: Path) -> Path | None:
-    """Move every existing ``session-*.json`` out of the project chats dir
-    into a timestamped ``.advisory-archive-<UTC>/`` subdirectory so Gemini
-    CLI cannot auto-resume, append to, or otherwise cross-contaminate the
-    advisory invocation with stale conversations.
+    """Move every existing session file (``.json`` and ``.jsonl``) out of the
+    project chats dir into a timestamped ``.advisory-archive-<UTC>/``
+    subdirectory so Gemini CLI cannot auto-resume, append to, or otherwise
+    cross-contaminate the advisory invocation with stale conversations.
 
     Returns the archive directory (for logging) or ``None`` if nothing was
     moved. Best-effort: failures to move individual files are swallowed
@@ -1097,7 +1215,7 @@ def _archive_stale_project_chats(project_root: Path) -> Path | None:
     chats_dir = _project_chats_dir(project_root)
     if not chats_dir or not chats_dir.is_dir():
         return None
-    existing = sorted(chats_dir.glob("session-*.json"))
+    existing = sorted(_glob_session_files(chats_dir, _all_session_file_globs()))
     if not existing:
         return None
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1384,7 +1502,7 @@ def _latest_fresh_chat_file_since(
 
     matched: list[tuple[tuple[float, str], Path]] = []
     start_cutoff = start_epoch - 5.0
-    for path in chats_dir.glob("session-*.json"):
+    for path in _glob_session_files(chats_dir, _all_session_file_globs()):
         try:
             mtime = path.stat().st_mtime
         except OSError:
@@ -1778,7 +1896,7 @@ def _run_interactive(
     # writes to (or the runner's session-file discovery picks up) a stale
     # file in the shared project chats dir. Two structural defenses:
     #
-    # 1. Archive any pre-existing ``session-*.json`` in the project chats dir
+    # 1. Archive any pre-existing session files (.json/.jsonl) in the chats dir
     #    into a timestamped ``.advisory-archive-<UTC>/`` subdirectory so the
     #    chats dir is empty when Gemini starts. Default on; opt out with
     #    ``CLAUDE_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS=0`` (e.g. if the user

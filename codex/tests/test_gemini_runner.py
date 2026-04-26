@@ -48,8 +48,33 @@ def _write_session_file(
     return path
 
 
-def _session_filename(label: str, session_id: str) -> str:
-    return f"session-{label}-{session_id[:8]}.json"
+def _session_filename(label: str, session_id: str, ext: str = ".json") -> str:
+    return f"session-{label}-{session_id[:8]}{ext}"
+
+
+def _write_jsonl_session_file(
+    home: Path,
+    short_id: str,
+    filename: str,
+    metadata: dict[str, object],
+    messages: list[dict[str, object]],
+    *,
+    extra_lines: list[dict[str, object]] | None = None,
+    mtime: float | None = None,
+) -> Path:
+    """Write a Gemini CLI v0.39+ JSONL session file."""
+    chats_dir = home / ".gemini" / gemini_runner.GEMINI_TMP_DIRNAME / short_id / "chats"
+    chats_dir.mkdir(parents=True, exist_ok=True)
+    path = chats_dir / filename
+    lines = [json.dumps(metadata)]
+    for msg in messages:
+        lines.append(json.dumps(msg))
+    for extra in (extra_lines or []):
+        lines.append(json.dumps(extra))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
 
 
 class GeminiRunnerTests(unittest.TestCase):
@@ -515,12 +540,15 @@ class GeminiRunnerTests(unittest.TestCase):
                     gemini_runner._project_short_id(project_root), "workspace"
                 )
 
-    def test_session_file_glob_targets_session_short_id(self) -> None:
+    def test_session_file_globs_targets_session_short_id(self) -> None:
         self.assertEqual(
-            gemini_runner._session_file_glob("12345678-aaaa-bbbb-cccc-ddddeeeeffff"),
-            "session-*-12345678.json",
+            gemini_runner._session_file_globs("12345678-aaaa-bbbb-cccc-ddddeeeeffff"),
+            ["session-*-12345678.json", "session-*-12345678.jsonl"],
         )
-        self.assertEqual(gemini_runner._session_file_glob(""), "session-*.json")
+        self.assertEqual(
+            gemini_runner._session_file_globs(""),
+            ["session-*.json", "session-*.jsonl"],
+        )
 
     def test_session_conversations_for_id_sorts_by_conversation_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -576,6 +604,91 @@ class GeminiRunnerTests(unittest.TestCase):
             sleep_mock.assert_called_once_with(
                 gemini_runner.JSON_READ_RETRY_DELAY_SECONDS
             )
+
+    def test_load_jsonl_conversation_basic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "session-test-abcd1234.jsonl"
+            lines = [
+                json.dumps({"sessionId": "abcd1234", "projectHash": "ph", "startTime": "2026-04-26T00:00:00Z"}),
+                json.dumps({"id": "m1", "timestamp": "2026-04-26T00:01:00Z", "type": "user", "content": "hello"}),
+                json.dumps({"$set": {"lastUpdated": "2026-04-26T00:02:00Z"}}),
+                json.dumps({"id": "m2", "timestamp": "2026-04-26T00:02:00Z", "type": "gemini", "content": "hi"}),
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            conversation = gemini_runner._load_conversation(path)
+            self.assertIsNotNone(conversation)
+            self.assertEqual(conversation["sessionId"], "abcd1234")
+            self.assertEqual(conversation["lastUpdated"], "2026-04-26T00:02:00Z")
+            messages = gemini_runner._conversation_messages(conversation)
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[0]["type"], "user")
+            self.assertEqual(messages[1]["type"], "gemini")
+
+    def test_load_jsonl_conversation_rewind_is_inclusive(self) -> None:
+        """$rewindTo removes the target message AND everything after it."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "session-rewind-abcd1234.jsonl"
+            lines = [
+                json.dumps({"sessionId": "abcd1234", "projectHash": "ph", "startTime": "2026-04-26T00:00:00Z"}),
+                json.dumps({"id": "m1", "timestamp": "2026-04-26T00:01:00Z", "type": "user", "content": "q1"}),
+                json.dumps({"id": "m2", "timestamp": "2026-04-26T00:02:00Z", "type": "gemini", "content": "a1"}),
+                json.dumps({"id": "m3", "timestamp": "2026-04-26T00:03:00Z", "type": "user", "content": "q2"}),
+                json.dumps({"$rewindTo": "m2"}),
+                json.dumps({"id": "m4", "timestamp": "2026-04-26T00:04:00Z", "type": "user", "content": "q2-revised"}),
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            conversation = gemini_runner._load_conversation(path)
+            messages = gemini_runner._conversation_messages(conversation)
+            ids = [m["id"] for m in messages]
+            # m2 and m3 should be removed (inclusive); m1 survives, m4 added after
+            self.assertEqual(ids, ["m1", "m4"])
+
+    def test_load_jsonl_conversation_truncated_line_salvages_prior(self) -> None:
+        """A partially-written trailing line should not drop the whole file."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "session-trunc-abcd1234.jsonl"
+            lines = [
+                json.dumps({"sessionId": "abcd1234", "projectHash": "ph", "startTime": "2026-04-26T00:00:00Z"}),
+                json.dumps({"id": "m1", "timestamp": "2026-04-26T00:01:00Z", "type": "user", "content": "hello"}),
+                '{"id": "m2", "timestamp": "2026-04-26T00:02:00Z", "typ',  # truncated
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            conversation = gemini_runner._load_conversation(path)
+            self.assertIsNotNone(conversation)
+            self.assertEqual(conversation["sessionId"], "abcd1234")
+            messages = gemini_runner._conversation_messages(conversation)
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["id"], "m1")
+
+    def test_load_jsonl_message_replacement(self) -> None:
+        """A repeated message id replaces the earlier version in-place."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "session-replace-abcd1234.jsonl"
+            lines = [
+                json.dumps({"sessionId": "abcd1234", "projectHash": "ph", "startTime": "2026-04-26T00:00:00Z"}),
+                json.dumps({"id": "m1", "timestamp": "2026-04-26T00:01:00Z", "type": "gemini", "content": "draft"}),
+                json.dumps({"id": "m1", "timestamp": "2026-04-26T00:01:05Z", "type": "gemini", "content": "final"}),
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            conversation = gemini_runner._load_conversation(path)
+            messages = gemini_runner._conversation_messages(conversation)
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(gemini_runner._extract_text_from_content(messages[0]["content"]), "final")
+
+    def test_glob_session_files_finds_both_json_and_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            d = Path(tmp_dir)
+            (d / "session-2026-test-abcd1234.json").write_text("{}", encoding="utf-8")
+            (d / "session-2026-test-abcd1234.jsonl").write_text("{}\n", encoding="utf-8")
+            (d / "other-file.txt").write_text("", encoding="utf-8")
+
+            files = gemini_runner._glob_session_files(d, gemini_runner._all_session_file_globs())
+            names = sorted(p.name for p in files)
+            self.assertEqual(names, ["session-2026-test-abcd1234.json", "session-2026-test-abcd1234.jsonl"])
 
     def test_session_conversations_for_id_ignores_subagent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
