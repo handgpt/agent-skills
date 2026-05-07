@@ -289,9 +289,12 @@ class GeminiRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            fake_now = datetime(2026, 3, 23, 0, 10, 0, tzinfo=timezone.utc)
+
             with mock.patch.object(gemini_runner.Path, "home", return_value=home), mock.patch(
                 "gemini_runner.configured_session_reuse_ttl_seconds", return_value=999999
-            ):
+            ), mock.patch.object(gemini_runner, "datetime", wraps=datetime) as datetime_mock:
+                datetime_mock.now.return_value = fake_now
                 self.assertEqual(
                     gemini_runner._saved_lane_session_id(project_root, "review"),
                     "legacy-session",
@@ -735,149 +738,6 @@ class GeminiRunnerTests(unittest.TestCase):
                 )
 
             self.assertEqual([item[1] for item in conversations], [main_path])
-
-    def test_saved_reusable_lane_session_id_requires_complete_gemini_tail(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            home = Path(tmp_dir)
-            project_root = home / "workspace"
-            project_root.mkdir()
-            _write_projects_registry(home, project_root, "proj-1")
-            _write_session_file(
-                home,
-                "proj-1",
-                _session_filename("finished", "session-ok"),
-                {
-                    "sessionId": "session-ok",
-                    "lastUpdated": "2026-03-20T02:00:00Z",
-                    "startTime": "2026-03-20T01:59:00Z",
-                    "messages": [
-                        {"type": "user", "content": "prompt"},
-                        {"type": "gemini", "content": "done"},
-                    ],
-                },
-            )
-            _write_session_file(
-                home,
-                "proj-1",
-                _session_filename("open", "session-open"),
-                {
-                    "sessionId": "session-open",
-                    "lastUpdated": "2026-03-20T03:00:00Z",
-                    "startTime": "2026-03-20T02:59:00Z",
-                    "messages": [
-                        {"type": "user", "content": "prompt"},
-                        {"type": "gemini", "content": "", "toolCalls": [{"status": "executing"}]},
-                    ],
-                },
-            )
-
-            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
-                gemini_runner._remember_lane_session(project_root, "review", "session-ok")
-                reusable = gemini_runner._saved_reusable_lane_session_id(
-                    project_root, "review"
-                )
-                gemini_runner._remember_lane_session(project_root, "review", "session-open")
-                not_reusable = gemini_runner._saved_reusable_lane_session_id(
-                    project_root, "review"
-                )
-
-            self.assertEqual(reusable, "session-ok")
-            self.assertEqual(not_reusable, "")
-
-    def test_saved_reusable_lane_session_id_rejects_invalid_contract_output(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            home = Path(tmp_dir)
-            project_root = home / "workspace"
-            project_root.mkdir()
-            _write_projects_registry(home, project_root, "proj-1")
-            _write_session_file(
-                home,
-                "proj-1",
-                _session_filename("bad", "session-bad"),
-                {
-                    "sessionId": "session-bad",
-                    "lastUpdated": "2026-03-23T03:00:00Z",
-                    "startTime": "2026-03-23T02:59:00Z",
-                    "messages": [
-                        {"type": "user", "content": "prompt"},
-                        {
-                            "type": "gemini",
-                            "content": "I will inspect the files now.",
-                        },
-                    ],
-                },
-            )
-
-            validator = gemini_runner.build_output_validator(
-                "## Likely Causes\n- bullet\n\n## Confidence\nOne short paragraph."
-            )
-
-            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
-                gemini_runner._remember_lane_session(project_root, "error", "session-bad")
-                reusable = gemini_runner._saved_reusable_lane_session_id(
-                    project_root, "error", output_validator=validator
-                )
-
-            self.assertEqual(reusable, "")
-
-    def test_saved_reusable_lane_session_id_rejects_new_user_turn_in_new_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            home = Path(tmp_dir)
-            project_root = home / "workspace"
-            project_root.mkdir()
-            _write_projects_registry(home, project_root, "proj-1")
-            _write_session_file(
-                home,
-                "proj-1",
-                _session_filename("old", "session-a"),
-                {
-                    "sessionId": "session-a",
-                    "lastUpdated": "2026-03-20T02:00:00Z",
-                    "startTime": "2026-03-20T01:00:00Z",
-                    "messages": [
-                        {
-                            "id": "u1",
-                            "timestamp": "2026-03-20T01:00:00Z",
-                            "type": "user",
-                            "content": "old prompt",
-                        },
-                        {
-                            "id": "g1",
-                            "timestamp": "2026-03-20T01:01:00Z",
-                            "type": "gemini",
-                            "content": "old answer",
-                        },
-                    ],
-                },
-                mtime=2.0,
-            )
-            _write_session_file(
-                home,
-                "proj-1",
-                _session_filename("new", "session-a"),
-                {
-                    "sessionId": "session-a",
-                    "lastUpdated": "2026-03-20T03:00:00Z",
-                    "startTime": "2026-03-20T03:00:00Z",
-                    "messages": [
-                        {
-                            "id": "u2",
-                            "timestamp": "2026-03-20T03:00:00Z",
-                            "type": "user",
-                            "content": "new prompt",
-                        }
-                    ],
-                },
-                mtime=3.0,
-            )
-
-            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
-                gemini_runner._remember_lane_session(project_root, "review", "session-a")
-                reusable = gemini_runner._saved_reusable_lane_session_id(
-                    project_root, "review"
-                )
-
-            self.assertEqual(reusable, "")
 
     def test_merged_session_messages_combines_multiple_files_for_same_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1382,6 +1242,40 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertEqual(selected, matching_path)
             self.assertNotEqual(selected, unrelated_path)
 
+    def test_fresh_prompt_session_id_since_detects_resume_fallback_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            start_epoch = 100.0
+            prompt = "review this change\n- Run Marker: cadv-resume-fallback"
+            _write_jsonl_session_file(
+                home,
+                "proj-1",
+                "session-2026-03-20T03-00-newsessi.jsonl",
+                {
+                    "sessionId": "new-session",
+                    "startTime": "1970-01-01T00:01:45Z",
+                    "lastUpdated": "1970-01-01T00:02:00Z",
+                    "kind": "main",
+                },
+                [
+                    {"id": "u1", "type": "user", "content": prompt},
+                    {"id": "g1", "type": "gemini", "content": "final"},
+                ],
+                mtime=120.0,
+            )
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                session_id = gemini_runner._fresh_prompt_session_id_since(
+                    project_root,
+                    start_epoch,
+                    "changed wrapper text\n- Run Marker: cadv-resume-fallback",
+                )
+
+            self.assertEqual(session_id, "new-session")
+
     def test_conversation_matches_prompt_prefers_run_marker(self) -> None:
         conversation = {
             "messages": [
@@ -1628,21 +1522,20 @@ class GeminiRunnerTests(unittest.TestCase):
             "## Verdict\nLooks good.\n\n## Recommendation\n- proceed",
         )
 
-    def test_run_interactive_retries_fresh_session_when_reused_output_is_invalid(self) -> None:
+    def test_run_interactive_uses_fresh_session_without_resume(self) -> None:
         project_root = Path("/workspace")
         invalid = subprocess.CompletedProcess(["gemini"], 0, "I will inspect files.", "")
-        success = subprocess.CompletedProcess(
-            ["gemini"], 0, "## Top Findings\n- ok\n\n## Overall Assessment\nGood.", ""
-        )
         validator = gemini_runner.build_output_validator(
             "## Top Findings\n- bullet\n\n## Overall Assessment\nOne short paragraph."
         )
 
         with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
-            "gemini_runner._saved_reusable_lane_session_id", return_value="old-session"
+            "gemini_runner._advisory_archive_stale_chats_enabled", return_value=False
+        ), mock.patch(
+            "gemini_runner._snapshot_preexisting_message_identities", return_value={"id:old"}
         ), mock.patch(
             "gemini_runner._run_interactive_attempt",
-            side_effect=[(invalid, "old-session"), (success, "new-session")],
+            return_value=(invalid, "new-session"),
         ) as attempt_mock:
             result = gemini_runner._run_interactive(
                 "prompt",
@@ -1653,9 +1546,16 @@ class GeminiRunnerTests(unittest.TestCase):
                 output_validator=validator,
             )
 
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("## Top Findings", result.stdout)
-        self.assertEqual(attempt_mock.call_count, 2)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("meta chatter", result.stderr)
+        attempt_mock.assert_called_once()
+        called_command = attempt_mock.call_args.args[0]
+        self.assertNotIn("--resume", called_command)
+        self.assertEqual(attempt_mock.call_args.kwargs["resumed_session_id"], "")
+        self.assertEqual(
+            attempt_mock.call_args.kwargs["preexisting_identities"],
+            {"id:old"},
+        )
 
     def test_run_interactive_returns_normalized_output(self) -> None:
         project_root = Path("/workspace")
@@ -1673,7 +1573,9 @@ class GeminiRunnerTests(unittest.TestCase):
         )
 
         with mock.patch("gemini_runner.shutil.which", return_value="/usr/bin/gemini"), mock.patch(
-            "gemini_runner._saved_reusable_lane_session_id", return_value=""
+            "gemini_runner._advisory_archive_stale_chats_enabled", return_value=False
+        ), mock.patch(
+            "gemini_runner._snapshot_preexisting_message_identities", return_value=set()
         ), mock.patch(
             "gemini_runner._run_interactive_attempt",
             return_value=(success, "new-session"),

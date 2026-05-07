@@ -1526,6 +1526,24 @@ def _latest_fresh_chat_file_since(
     return matched[0][1]
 
 
+def _fresh_prompt_session_id_since(
+    project_root: Path, start_epoch: float, prompt: str
+) -> str:
+    """Return the session id Gemini actually wrote for this prompt.
+
+    Newer Gemini CLI versions may handle ``--resume <missing-id>`` by creating
+    a fresh session instead of failing. The runner must therefore discover the
+    session file written for the current prompt even when it requested a resume.
+    """
+    candidate = _latest_fresh_chat_file_since(project_root, start_epoch, prompt)
+    if candidate is None:
+        return ""
+    conversation = _load_conversation(candidate)
+    if not conversation:
+        return ""
+    return str(conversation.get("sessionId", "")).strip()
+
+
 def _launch_interactive_process(
     command: list[str], project_root: Path
 ) -> tuple[subprocess.Popen[bytes], int]:
@@ -1732,18 +1750,12 @@ def _run_interactive_attempt(
             while True:
                 captured_output = _drain_pty_output(master_fd, captured_output)
 
-                if not resolved_session_id:
-                    candidate = _latest_fresh_chat_file_since(
-                        project_root, start_epoch, prompt=current_command[-1]
-                    )
-                    if candidate is not None:
-                        conversation = _load_conversation(candidate)
-                        if conversation:
-                            resolved_session_id = str(
-                                conversation.get("sessionId", "")
-                            ).strip()
-                            if resolved_session_id:
-                                last_progress = time.monotonic()
+                actual_session_id = _fresh_prompt_session_id_since(
+                    project_root, start_epoch, current_command[-1]
+                )
+                if actual_session_id and actual_session_id != resolved_session_id:
+                    resolved_session_id = actual_session_id
+                    last_progress = time.monotonic()
 
                 merged_messages: list[dict[str, object]] = []
                 if resolved_session_id:

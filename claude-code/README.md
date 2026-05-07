@@ -141,8 +141,8 @@ claude-code/
 - **Workspace-scoped.** Agents only inspect files inside the current workspace.
   Out-of-workspace paths are ignored.
 - **Read-only sandbox.** Codex CLI skills run in read-only sandbox mode.
-- **Session-reusable.** The Gemini runner reuses sessions per project and lane
-  to maintain context across related advisory passes.
+- **Fresh interactive sessions.** Gemini advisory passes start fresh and
+  archive stale chat files before launch to avoid stale-context contamination.
 
 ## Differences from Codex Version
 

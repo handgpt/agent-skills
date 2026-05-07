@@ -53,11 +53,11 @@ Attach only the few source files, config files, or log excerpts that matter to t
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk.
 
-When one error-analysis pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner will resolve them inside the current Codex workspace, switch Gemini's `cwd` to their common ancestor inside that workspace, list each project explicitly in the prompt, stamp the prompt with a run marker plus project-scope key, and reuse sessions by the full project set rather than by one repo root.
+When one error-analysis pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner will resolve them inside the current Codex workspace, switch Gemini's `cwd` to their common ancestor inside that workspace, list each project explicitly in the prompt, and stamp the prompt with a run marker plus project-scope key.
 
-The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, reuse the most recent saved Gemini error-analysis session for the same project set and lane when possible, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, start a fresh interactive Gemini error-analysis session, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
 
-The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the current diagnostic turn is complete and recover the final answer. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
+The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the current diagnostic turn is complete and recover the final answer. Before launch, it archives stale chat files and snapshots existing message identities so old session history cannot be returned as the current result. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -83,5 +83,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared advisory runner plus per-project error-lane session reuse, interactive session-file result recovery by default, and a switchable headless fallback path.
+- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared advisory runner, fresh interactive sessions by default, stale-chat archiving, session-file result recovery, and a switchable headless fallback path.
 - [error-brief-template.md](references/error-brief-template.md) provides a compact diagnostic brief template.

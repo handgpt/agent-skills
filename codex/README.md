@@ -43,7 +43,7 @@ When the matching `AGENTS.md` rules are installed, Codex should run these adviso
 
 The wrappers pass local file and directory paths to Gemini so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
 
-They launch Gemini from the current single-project or multi-project workspace root in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, send the fully assembled advisory prompt inline, reuse the most recent saved Gemini session for the same project set and advisory lane when available, and restrict Gemini review context to workspace-local files and directories only.
+They launch Gemini from the current single-project or multi-project workspace root in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, send the fully assembled advisory prompt inline, start a fresh interactive Gemini session for each advisory pass, and restrict Gemini review context to workspace-local files and directories only.
 
 By default, the shared runner now uses the interactive Gemini CLI path: it opens `gemini -i "<prompt>"` under a PTY, watches the project-local Gemini session file under `~/.gemini/tmp/<project>/chats/`, and extracts the final advisory when the recorded turn becomes stable. This keeps the advisory flow closer to a human interactive session while still allowing Codex to automate startup, waiting, extraction, and shutdown.
 
@@ -51,7 +51,9 @@ The previous headless non-interactive path is still kept in code for comparison 
 
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. Gemini runs from the selected workspace root and may inspect other workspace-local files when the brief requires it.
 
-When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches Gemini's `cwd` to their common ancestor inside that workspace, lists each project explicitly in the prompt, stamps the prompt with a run marker plus project-scope key, and scopes session reuse by the full project set instead of by a single repo root.
+When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches Gemini's `cwd` to their common ancestor inside that workspace, lists each project explicitly in the prompt, and stamps the prompt with a run marker plus project-scope key.
+
+Before an interactive advisory run, the runner archives pre-existing Gemini chat files for the workspace and snapshots existing message identities. This prevents stale session history from being mistaken for the current advisory result. Set `CODEX_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS=0` only if you intentionally need to preserve concurrent manual Gemini sessions in the same workspace.
 
 By default, the shared Gemini runner uses Gemini CLI's stable `pro` alias via `--model pro` so these skills prefer the latest Pro-class model without hard-coding a short-lived version string. Set `CODEX_GEMINI_MODEL` if you need to override that default.
 
