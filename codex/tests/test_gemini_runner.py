@@ -682,6 +682,22 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertEqual(len(messages), 1)
             self.assertEqual(gemini_runner._extract_text_from_content(messages[0]["content"]), "final")
 
+    def test_load_jsonl_conversation_without_metadata_keeps_message_fragment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "session-2026-05-07T09-37-dfae7019.jsonl"
+            lines = [
+                json.dumps({"id": "g1", "timestamp": "2026-05-07T09:57:51Z", "type": "gemini", "content": "final"}),
+                json.dumps({"$set": {"lastUpdated": "2026-05-07T09:57:51Z"}}),
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            conversation = gemini_runner._load_conversation(path)
+            self.assertIsNotNone(conversation)
+            self.assertNotIn("sessionId", conversation)
+            messages = gemini_runner._conversation_messages(conversation)
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["content"], "final")
+
     def test_glob_session_files_finds_both_json_and_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             d = Path(tmp_dir)
@@ -850,12 +866,91 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["content"], "final answer")
 
+    def test_merged_session_messages_includes_metadata_less_jsonl_fragment_by_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            project_root = home / "workspace"
+            project_root.mkdir()
+            _write_projects_registry(home, project_root, "proj-1")
+            session_id = "dfae7019-ed32-4341-86e4-11ce2e6d6591"
+            _write_jsonl_session_file(
+                home,
+                "proj-1",
+                _session_filename("metadata", session_id, ".jsonl"),
+                {
+                    "sessionId": session_id,
+                    "lastUpdated": "2026-05-07T09:47:05Z",
+                    "startTime": "2026-05-07T09:37:00Z",
+                    "kind": "main",
+                },
+                [
+                    {
+                        "id": "u1",
+                        "timestamp": "2026-05-07T09:37:01Z",
+                        "type": "user",
+                        "content": "prompt",
+                    },
+                    {
+                        "id": "g1",
+                        "timestamp": "2026-05-07T09:47:05Z",
+                        "type": "gemini",
+                        "content": "",
+                        "thoughts": [{"subject": "working"}],
+                    },
+                ],
+                mtime=100.0,
+            )
+            chats_dir = home / ".gemini" / gemini_runner.GEMINI_TMP_DIRNAME / "proj-1" / "chats"
+            fragment_path = chats_dir / _session_filename("fragment", session_id, ".jsonl")
+            fragment_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": "g2",
+                                "timestamp": "2026-05-07T09:57:51Z",
+                                "type": "gemini",
+                                "content": "final answer",
+                            }
+                        ),
+                        json.dumps({"$set": {"lastUpdated": "2026-05-07T09:57:51Z"}}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.utime(fragment_path, (200.0, 200.0))
+
+            with mock.patch.object(gemini_runner.Path, "home", return_value=home):
+                messages = gemini_runner._merged_session_messages(project_root, session_id)
+
+            self.assertEqual([message["id"] for message in messages], ["u1", "g1", "g2"])
+            self.assertEqual(messages[-1]["content"], "final answer")
+            self.assertEqual(
+                gemini_runner._interactive_outcome(messages),
+                ("success", "final answer"),
+            )
+
     def test_interactive_outcome_returns_success_after_final_gemini_message(self) -> None:
         outcome = gemini_runner._interactive_outcome(
             [
                 {"type": "user", "content": "prompt"},
                 {"type": "gemini", "content": "", "toolCalls": [{"status": "success"}]},
                 {"type": "gemini", "content": "final answer"},
+            ]
+        )
+
+        self.assertEqual(outcome, ("success", "final answer"))
+
+    def test_interactive_outcome_accepts_metadata_less_gemini_fragment(self) -> None:
+        outcome = gemini_runner._interactive_outcome(
+            [
+                {
+                    "id": "g2",
+                    "type": "gemini",
+                    "timestamp": "2026-05-07T09:57:51Z",
+                    "content": "final answer",
+                }
             ]
         )
 

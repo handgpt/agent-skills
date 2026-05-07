@@ -1061,6 +1061,11 @@ def _session_file_globs(session_id: str) -> list[str]:
     return [f"session-*{ext}" for ext in SESSION_FILE_EXTENSIONS]
 
 
+def _session_file_matches_id(path: Path, session_id: str) -> bool:
+    short_id = session_id.strip()[:8]
+    return bool(short_id) and path.name.endswith(f"-{short_id}{path.suffix}")
+
+
 def _all_session_file_globs() -> list[str]:
     """Glob patterns matching *any* session file (both .json and .jsonl)."""
     return [f"session-*{ext}" for ext in SESSION_FILE_EXTENSIONS]
@@ -1178,11 +1183,16 @@ def _load_jsonl_conversation(path: Path) -> dict[str, object] | None:
             elif "sessionId" in record:
                 metadata.update(record)
         if not metadata.get("sessionId"):
-            # No metadata found — might be a transient IO issue.
+            # A live Gemini CLI may continue appending to a session path that
+            # was moved by older runner versions, recreating a JSONL fragment
+            # with message records but no leading metadata. Keep those records;
+            # callers can associate them by the session short id in the file
+            # name.
             if hit_parse_error and attempt + 1 < JSON_READ_RETRY_COUNT:
                 time.sleep(JSON_READ_RETRY_DELAY_SECONDS)
                 continue
-            return None
+            if not messages:
+                return None
         metadata["messages"] = messages
         return metadata
     return None
@@ -1227,7 +1237,10 @@ def _session_conversations_for_id(
             continue
         if _is_subagent_conversation(conversation):
             continue
-        if str(conversation.get("sessionId", "")).strip() != session_id:
+        conversation_session_id = str(conversation.get("sessionId", "")).strip()
+        if conversation_session_id and conversation_session_id != session_id:
+            continue
+        if not conversation_session_id and not _session_file_matches_id(path, session_id):
             continue
         matches.append((_conversation_sort_key(path, conversation), path, conversation))
     matches.sort(key=lambda item: item[0])
@@ -1258,7 +1271,7 @@ def _snapshot_preexisting_message_identities(project_root: Path) -> set[str]:
 
 def _advisory_archive_stale_chats_enabled() -> bool:
     raw = os.environ.get(
-        GEMINI_ADVISORY_ARCHIVE_STALE_CHATS_ENV_VAR, "1"
+        GEMINI_ADVISORY_ARCHIVE_STALE_CHATS_ENV_VAR, "0"
     ).strip().lower()
     return raw not in {"0", "false", "no", "off", ""}
 
@@ -1406,7 +1419,10 @@ def _latest_turn_messages(new_messages: list[dict[str, object]]) -> list[dict[st
         if str(message.get("type", "")).strip() == "user":
             last_user_index = index
     if last_user_index == -1:
-        return []
+        # Metadata-less JSONL fragments can be recreated by a live Gemini CLI
+        # after an older runner moved the original session file. Such fragments
+        # may contain only the subsequent Gemini records for the current turn.
+        return new_messages
     return new_messages[last_user_index + 1 :]
 
 
@@ -1945,6 +1961,9 @@ def _run_interactive(
     if not gemini:
         raise FileNotFoundError("gemini executable not found in PATH")
 
+    # Archiving is opt-in only. Moving live session files can split one Gemini
+    # CLI turn across multiple JSONL fragments when another process is still
+    # appending to the original path.
     if _advisory_archive_stale_chats_enabled():
         archived = _archive_stale_project_chats(project_root)
         if archived is not None:

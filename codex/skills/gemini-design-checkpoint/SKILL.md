@@ -55,7 +55,7 @@ When one design checkpoint must intentionally cover multiple projects, repeat `-
 
 The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, start a fresh interactive Gemini design-checkpoint session, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as hints.
 
-The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner observes Gemini's project session file under `~/.gemini/tmp/<project>/chats/` to detect when the advisory turn is finished and recover the final answer. Before launch, it archives stale chat files and snapshots existing message identities so old session history cannot be returned as the current result. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
+The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner observes Gemini's project session files under `~/.gemini/tmp/<project>/chats/` to detect when the advisory turn is finished and recover the final answer. Before launch, it snapshots existing message identities so old session history cannot be returned as the current result. It does not move chat files by default, so concurrent Gemini processes are not disrupted. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -83,5 +83,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_design_check.py` wraps Gemini CLI with the shared advisory runner, project-root execution, fresh interactive sessions by default, stale-chat archiving, session-file result recovery, a switchable headless fallback path, workspace-root exploration, workspace-only context filtering, and result recovery.
+- `scripts/run_gemini_design_check.py` wraps Gemini CLI with the shared advisory runner, project-root execution, fresh interactive sessions by default, pre-run message snapshots, session-file result recovery, a switchable headless fallback path, workspace-root exploration, workspace-only context filtering, and result recovery.
 - [references/design-brief-template.md](references/design-brief-template.md) provides a compact brief template for the advisory pass.

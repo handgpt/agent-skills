@@ -53,7 +53,7 @@ The previous headless non-interactive path is still kept in code for comparison 
 
 When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches Gemini's `cwd` to their common ancestor inside that workspace, lists each project explicitly in the prompt, and stamps the prompt with a run marker plus project-scope key.
 
-Before an interactive advisory run, the runner archives pre-existing Gemini chat files for the workspace and snapshots existing message identities. This prevents stale session history from being mistaken for the current advisory result. Set `CODEX_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS=0` only if you intentionally need to preserve concurrent manual Gemini sessions in the same workspace.
+Before an interactive advisory run, the runner snapshots existing message identities so stale session history cannot be mistaken for the current advisory result. It does not move Gemini chat files by default, because moving a file that a live Gemini CLI process is still appending to can split one session across multiple JSONL fragments. Set `CODEX_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS=1` only for isolated debugging runs where no other Gemini process is active in the same workspace.
 
 By default, the shared Gemini runner uses Gemini CLI's stable `pro` alias via `--model pro` so these skills prefer the latest Pro-class model without hard-coding a short-lived version string. Set `CODEX_GEMINI_MODEL` if you need to override that default.
 

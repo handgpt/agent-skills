@@ -59,7 +59,7 @@ When one advisory pass must intentionally cover multiple projects, repeat `--pro
 
 The wrapper launches Gemini from the workspace root, sends the fully assembled prompt inline, starts a fresh interactive Gemini review session, runs in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only passes workspace-local `--context-file` paths as priority hints.
 
-The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, archives stale chat files before launch, snapshots existing message identities, and watches Gemini's workspace session file to detect when the current review turn is complete and recover the final answer.
+The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, snapshots existing message identities before launch, and watches Gemini's workspace session files to detect when the current review turn is complete and recover the final answer. It does not move chat files by default, so concurrent Gemini processes are not disrupted.
 
 The shared runner defaults to `gemini-3.1-pro-preview`. Override with `CLAUDE_GEMINI_MODEL` if needed.
 
