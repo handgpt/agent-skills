@@ -1429,23 +1429,25 @@ def _launch_interactive_process(
     return process, master_fd
 
 
-def _drain_pty_output(master_fd: int, current_output: str) -> str:
+def _drain_pty_output(master_fd: int, current_output: str) -> tuple[str, bool]:
     updated = current_output
+    changed = False
     while True:
         try:
             ready, _, _ = select.select([master_fd], [], [], 0)
         except OSError:
-            return updated
+            return updated, changed
         if not ready:
-            return updated
+            return updated, changed
         try:
             chunk = os.read(master_fd, 4096)
         except BlockingIOError:
-            return updated
+            return updated, changed
         except OSError:
-            return updated
+            return updated, changed
         if not chunk:
-            return updated
+            return updated, changed
+        changed = True
         updated = _trim_output_tail(updated, chunk.decode("utf-8", errors="replace"))
 
 
@@ -1580,10 +1582,9 @@ def _run_interactive_attempt(
         )
     start_monotonic = time.monotonic()
     start_epoch = time.time()
-    last_progress = start_monotonic
+    last_pty_activity = start_monotonic
     resolved_session_id = resumed_session_id
     outcome: tuple[str, str] | None = None
-    last_progress_signature: tuple[object, ...] = ()
     seen_thought_keys: set[str] = set()
     last_wait_percent = -1
     new_messages: list[dict[str, object]] = []
@@ -1599,27 +1600,23 @@ def _run_interactive_attempt(
 
         try:
             while True:
-                captured_output = _drain_pty_output(master_fd, captured_output)
+                captured_output, pty_changed = _drain_pty_output(
+                    master_fd, captured_output
+                )
+                if pty_changed:
+                    last_pty_activity = time.monotonic()
 
                 actual_session_id = _fresh_prompt_session_id_since(
                     project_root, start_epoch, current_command[-1]
                 )
                 if actual_session_id and actual_session_id != resolved_session_id:
                     resolved_session_id = actual_session_id
-                    last_progress = time.monotonic()
 
                 merged_messages: list[dict[str, object]] = []
                 if resolved_session_id:
                     merged_messages = _merged_session_messages(
                         project_root, resolved_session_id
                     )
-                    current_progress_signature = tuple(
-                        _message_progress_signature(message)
-                        for message in merged_messages
-                    )
-                    if current_progress_signature != last_progress_signature:
-                        last_progress_signature = current_progress_signature
-                        last_progress = time.monotonic()
                     new_messages = [
                         message
                         for message in merged_messages
@@ -1636,7 +1633,10 @@ def _run_interactive_attempt(
                 last_wait_percent = _emit_wait_progress(
                     now, start_monotonic, timeout_seconds, last_wait_percent
                 )
-                if outcome and now - last_progress >= INTERACTIVE_STABILITY_SECONDS:
+                if (
+                    outcome
+                    and now - last_pty_activity >= INTERACTIVE_STABILITY_SECONDS
+                ):
                     status, text = outcome
                     _close_interactive_process(process, master_fd)
                     process_closed = True
@@ -1655,18 +1655,15 @@ def _run_interactive_attempt(
                     )
 
                 if process.poll() is not None:
-                    captured_output = _drain_pty_output(master_fd, captured_output)
+                    captured_output, pty_changed = _drain_pty_output(
+                        master_fd, captured_output
+                    )
+                    if pty_changed:
+                        last_pty_activity = time.monotonic()
                     if resolved_session_id:
                         merged_messages = _merged_session_messages(
                             project_root, resolved_session_id
                         )
-                        current_progress_signature = tuple(
-                            _message_progress_signature(message)
-                            for message in merged_messages
-                        )
-                        if current_progress_signature != last_progress_signature:
-                            last_progress_signature = current_progress_signature
-                            last_progress = time.monotonic()
                         new_messages = [
                             message
                             for message in merged_messages

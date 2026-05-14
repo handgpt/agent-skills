@@ -997,7 +997,8 @@ class GeminiRunnerTests(unittest.TestCase):
         with mock.patch(
             "gemini_runner._launch_interactive_process", return_value=(process, 11)
         ), mock.patch(
-            "gemini_runner._drain_pty_output", side_effect=lambda fd, output: output
+            "gemini_runner._drain_pty_output",
+            side_effect=lambda fd, output: (output, False),
         ), mock.patch(
             "gemini_runner._close_interactive_process"
         ) as close_mock, mock.patch(
@@ -1051,6 +1052,51 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertIn("100% (1s/1s)", stderr.getvalue())
         close_mock.assert_called_once()
 
+    def test_run_interactive_attempt_waits_for_pty_quiet_after_json_outcome(self) -> None:
+        project_root = Path("/workspace")
+        prompt = "prompt"
+        command = ["gemini", "-i", prompt]
+        process = mock.Mock()
+        process.poll.return_value = None
+        final_messages = [
+            {"type": "user", "content": prompt},
+            {"id": "g1", "type": "gemini", "content": "done"},
+        ]
+
+        with mock.patch(
+            "gemini_runner._launch_interactive_process", return_value=(process, 11)
+        ), mock.patch(
+            "gemini_runner._drain_pty_output",
+            side_effect=[("streaming", True), ("streaming", False)],
+        ) as drain_mock, mock.patch(
+            "gemini_runner._close_interactive_process"
+        ) as close_mock, mock.patch(
+            "gemini_runner.time.monotonic",
+            side_effect=[0.0, 0.1, 1.0, 3.2],
+        ), mock.patch(
+            "gemini_runner.time.time", return_value=100.0
+        ), mock.patch(
+            "gemini_runner.time.sleep"
+        ), mock.patch(
+            "gemini_runner._merged_session_messages",
+            side_effect=[[], final_messages, final_messages],
+        ), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ):
+            result, resolved_session_id = gemini_runner._run_interactive_attempt(
+                command,
+                1200,
+                project_root,
+                resumed_session_id="session-a",
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "done")
+        self.assertEqual(resolved_session_id, "session-a")
+        self.assertEqual(drain_mock.call_count, 2)
+        process.poll.assert_called_once()
+        close_mock.assert_called_once()
+
     def test_run_interactive_attempt_restarts_after_exit_with_thoughts(self) -> None:
         project_root = Path("/workspace")
         prompt = "prompt"
@@ -1068,7 +1114,8 @@ class GeminiRunnerTests(unittest.TestCase):
             "gemini_runner._launch_interactive_process",
             side_effect=[(process_one, 11), (process_two, 12)],
         ), mock.patch(
-            "gemini_runner._drain_pty_output", side_effect=lambda fd, output: output
+            "gemini_runner._drain_pty_output",
+            side_effect=lambda fd, output: (output, False),
         ), mock.patch(
             "gemini_runner._close_interactive_process"
         ) as close_mock, mock.patch(
@@ -1196,7 +1243,8 @@ class GeminiRunnerTests(unittest.TestCase):
             "gemini_runner._launch_interactive_process",
             side_effect=[(processes[0], 11), (processes[1], 12), (processes[2], 13)],
         ), mock.patch(
-            "gemini_runner._drain_pty_output", side_effect=lambda fd, output: output
+            "gemini_runner._drain_pty_output",
+            side_effect=lambda fd, output: (output, False),
         ), mock.patch(
             "gemini_runner._close_interactive_process"
         ) as close_mock, mock.patch(
