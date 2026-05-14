@@ -26,12 +26,6 @@ GEMINI_MODEL_ENV_VAR = "CODEX_GEMINI_MODEL"
 DEFAULT_GEMINI_FLAGS = ("--approval-mode", "yolo")
 GEMINI_SANDBOX_ENV_VAR = "GEMINI_SANDBOX"
 GEMINI_SANDBOX_DISABLED_VALUE = "false"
-GEMINI_SESSION_TTL_ENV_VAR = "CODEX_GEMINI_SESSION_TTL_SECONDS"
-DEFAULT_SESSION_REUSE_TTL_SECONDS = 6 * 60 * 60
-LANE_SESSION_STATE_FILE = "codex-lane-sessions.json"
-GEMINI_ADVISORY_ARCHIVE_STALE_CHATS_ENV_VAR = (
-    "CODEX_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS"
-)
 GEMINI_PROJECTS_FILE = "projects.json"
 GEMINI_TMP_DIRNAME = "tmp"
 GEMINI_HISTORY_DIRNAME = "history"
@@ -63,7 +57,10 @@ EXIT_RESUME_PROGRESS_NOTE = (
     "[Gemini thought] Gemini exited before a final reply was recorded; "
     "resuming the same session and continuing to wait."
 )
-RUN_MARKER_PREFIX = "cadv-"
+RESUME_CONTINUATION_PROMPT = (
+    "Continue the previous unfinished advisory turn. Do not repeat the brief. "
+    "Return only the final Markdown answer requested by the previous prompt."
+)
 META_CHATTER_MARKERS = (
     "what would you like",
     "would you like me to",
@@ -368,41 +365,8 @@ def _focus_scope_root(
 
 
 # ---------------------------------------------------------------------------
-# Lane session helpers
+# Scope key helpers
 # ---------------------------------------------------------------------------
-
-
-def _lane_state_path() -> Path:
-    return Path.home() / ".gemini" / LANE_SESSION_STATE_FILE
-
-
-def _load_lane_state() -> dict[str, object]:
-    state_path = _lane_state_path()
-    try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _save_lane_state(payload: dict[str, object]) -> None:
-    state_path = _lane_state_path()
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def configured_session_reuse_ttl_seconds() -> int:
-    raw_value = os.environ.get(GEMINI_SESSION_TTL_ENV_VAR, "").strip()
-    if not raw_value:
-        return DEFAULT_SESSION_REUSE_TTL_SECONDS
-    try:
-        ttl_seconds = int(raw_value)
-    except ValueError:
-        return DEFAULT_SESSION_REUSE_TTL_SECONDS
-    return max(0, ttl_seconds)
 
 
 def _scope_key(project_root: Path, scope_root: Path | None = None) -> str:
@@ -433,82 +397,6 @@ def _project_set_key(
     return "|".join(sorted(relative_roots))
 
 
-def _lane_state_key(
-    project_root: Path,
-    lane: str,
-    scope_root: Path | None = None,
-    project_roots: tuple[Path, ...] | None = None,
-) -> str:
-    return (
-        f"{project_root.resolve()}::{lane}::projects="
-        f"{_project_set_key(project_root, project_roots)}::scope="
-        f"{_scope_key(project_root, scope_root)}"
-    )
-
-
-def _legacy_lane_state_key(project_root: Path, lane: str) -> str:
-    return f"{project_root.resolve()}::{lane}"
-
-
-def _remember_lane_session(
-    project_root: Path,
-    lane: str,
-    session_id: str,
-    scope_root: Path | None = None,
-    project_roots: tuple[Path, ...] | None = None,
-) -> None:
-    if not lane or not session_id:
-        return
-    resolved_scope_root = project_root.resolve()
-    if scope_root is not None:
-        candidate_scope_root = scope_root.resolve()
-        if _is_within(candidate_scope_root, resolved_scope_root):
-            resolved_scope_root = candidate_scope_root
-    payload = _load_lane_state()
-    normalized_project_roots = _project_roots_in_scope(project_root, project_roots)
-    payload[_lane_state_key(project_root, lane, resolved_scope_root, normalized_project_roots)] = {
-        "lane": lane,
-        "projectRoot": str(project_root.resolve()),
-        "projectRoots": [str(root) for root in normalized_project_roots],
-        "scopeRoot": str(resolved_scope_root),
-        "sessionId": session_id,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-    }
-    _save_lane_state(payload)
-
-
-def _saved_lane_session_id(
-    project_root: Path,
-    lane: str,
-    scope_root: Path | None = None,
-    project_roots: tuple[Path, ...] | None = None,
-) -> str:
-    if not lane:
-        return ""
-    payload = _load_lane_state()
-    entry = payload.get(_lane_state_key(project_root, lane, scope_root, project_roots))
-    if (
-        not isinstance(entry, dict)
-        and _scope_key(project_root, scope_root) == "."
-        and _project_set_key(project_root, project_roots) == "."
-    ):
-        entry = payload.get(_legacy_lane_state_key(project_root, lane))
-    if not isinstance(entry, dict):
-        return ""
-    ttl_seconds = configured_session_reuse_ttl_seconds()
-    if ttl_seconds <= 0:
-        return ""
-    raw_updated_at = entry.get("updatedAt")
-    updated_at = _parse_iso_timestamp(raw_updated_at)
-    if raw_updated_at in (None, ""):
-        return str(entry.get("sessionId", "")).strip()
-    if updated_at is None:
-        return ""
-    if (datetime.now(timezone.utc) - updated_at).total_seconds() > ttl_seconds:
-        return ""
-    return str(entry.get("sessionId", "")).strip()
-
-
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
@@ -522,7 +410,6 @@ def build_prompt(
     lane: str,
     focus_root: Path,
     project_roots: tuple[Path, ...] | None = None,
-    run_marker: str = "",
     role_line: str,
     output_contract: str,
 ) -> str:
@@ -573,7 +460,6 @@ def build_prompt(
         f"- Project Scope Key: {project_scope_key}",
         f"- Target Directory: {_display_workspace_path(resolved_focus_root, resolved_project_root)}",
         f"- Workspace Root: {_tilde_path(resolved_project_root)}",
-        f"- Run Marker: {run_marker or f'{RUN_MARKER_PREFIX}none'}",
         "## Inlined Brief",
         brief_text.strip() or "- The brief file was empty.",
         ]
@@ -739,7 +625,9 @@ def build_output_validator(output_contract: str) -> Callable[[str], str]:
 # ---------------------------------------------------------------------------
 
 
-def _interactive_command(gemini: str, prompt: str, session_id: str) -> list[str]:
+def _interactive_command(
+    gemini: str, prompt: str, session_id: str, *, resume: bool = False
+) -> list[str]:
     command = [
         gemini,
         *DEFAULT_GEMINI_FLAGS,
@@ -747,8 +635,12 @@ def _interactive_command(gemini: str, prompt: str, session_id: str) -> list[str]
         configured_gemini_model(),
     ]
     if session_id:
-        command.extend(["--resume", session_id])
-    command.extend(["-i", _safe_prompt_argument(prompt)])
+        command.extend(["--resume" if resume else "--session-id", session_id])
+    # Gemini CLI --resume without -i only opens the interactive UI with
+    # history loaded. To continue an interrupted run from automation, send a
+    # tiny continuation instruction rather than duplicating the full brief.
+    input_prompt = RESUME_CONTINUATION_PROMPT if resume else prompt
+    command.extend(["-i", _safe_prompt_argument(input_prompt)])
     return command
 
 
@@ -854,11 +746,6 @@ def _session_file_globs(session_id: str) -> list[str]:
 def _session_file_matches_id(path: Path, session_id: str) -> bool:
     short_id = session_id.strip()[:8]
     return bool(short_id) and path.name.endswith(f"-{short_id}{path.suffix}")
-
-
-def _all_session_file_globs() -> list[str]:
-    """Glob patterns matching *any* session file (both .json and .jsonl)."""
-    return [f"session-*{ext}" for ext in SESSION_FILE_EXTENSIONS]
 
 
 def _glob_session_files(directory: Path, patterns: list[str]) -> list[Path]:
@@ -1042,58 +929,6 @@ def _conversation_messages(conversation: dict[str, object]) -> list[dict[str, ob
     if not isinstance(messages, list):
         return []
     return [message for message in messages if isinstance(message, dict)]
-
-
-def _snapshot_preexisting_message_identities(project_root: Path) -> set[str]:
-    """Capture all message identities already present before Gemini starts."""
-    chats_dir = _project_chats_dir(project_root)
-    if not chats_dir or not chats_dir.is_dir():
-        return set()
-    identities: set[str] = set()
-    for path in _glob_session_files(chats_dir, _all_session_file_globs()):
-        conversation = _load_conversation(path)
-        if not conversation:
-            continue
-        for message in _conversation_messages(conversation):
-            identities.add(_message_identity(message))
-    return identities
-
-
-def _advisory_archive_stale_chats_enabled() -> bool:
-    raw = os.environ.get(
-        GEMINI_ADVISORY_ARCHIVE_STALE_CHATS_ENV_VAR, "0"
-    ).strip().lower()
-    return raw not in {"0", "false", "no", "off", ""}
-
-
-def _archive_stale_project_chats(project_root: Path) -> Path | None:
-    """Move existing Gemini session files aside before a new advisory run."""
-    chats_dir = _project_chats_dir(project_root)
-    if not chats_dir or not chats_dir.is_dir():
-        return None
-    existing = sorted(_glob_session_files(chats_dir, _all_session_file_globs()))
-    if not existing:
-        return None
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    archive_dir = chats_dir / f".advisory-archive-{timestamp}"
-    try:
-        archive_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    moved = False
-    for path in existing:
-        try:
-            path.rename(archive_dir / path.name)
-            moved = True
-        except OSError:
-            continue
-    if not moved:
-        try:
-            archive_dir.rmdir()
-        except OSError:
-            pass
-        return None
-    return archive_dir
 
 
 def _extract_text_from_content(content: object) -> str:
@@ -1314,94 +1149,6 @@ def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
     return False
 
 
-def _normalized_prompt_text(text: str) -> str:
-    return text.strip()
-
-
-def _prompt_run_marker(prompt: str) -> str:
-    marker_prefix = "- Run Marker:"
-    for line in prompt.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(marker_prefix):
-            return stripped[len(marker_prefix) :].strip()
-    return ""
-
-
-def _prompt_variants(prompt: str) -> set[str]:
-    variants = {
-        _normalized_prompt_text(prompt),
-        _normalized_prompt_text(_safe_prompt_argument(prompt)),
-    }
-    return {variant for variant in variants if variant}
-
-
-def _conversation_matches_prompt(conversation: dict[str, object], prompt: str) -> bool:
-    prompt_variants = _prompt_variants(prompt)
-    prompt_run_marker = _prompt_run_marker(prompt)
-    if not prompt_variants:
-        return False
-    for message in _conversation_messages(conversation):
-        if str(message.get("type", "")).strip() != "user":
-            continue
-        message_text = _normalized_prompt_text(_message_text(message))
-        if prompt_run_marker and prompt_run_marker in message_text:
-            return True
-        if message_text in prompt_variants:
-            return True
-    return False
-
-
-def _latest_fresh_chat_file_since(
-    project_root: Path, start_epoch: float, prompt: str
-) -> Path | None:
-    chats_dir = _project_chats_dir(project_root)
-    if not chats_dir or not chats_dir.is_dir():
-        return None
-
-    matched: list[tuple[tuple[float, str], Path]] = []
-    start_cutoff = start_epoch - 5.0
-    for path in _glob_session_files(chats_dir, _all_session_file_globs()):
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        if mtime < start_cutoff:
-            continue
-        conversation = _load_conversation(path)
-        if not conversation:
-            continue
-        if _is_subagent_conversation(conversation):
-            continue
-        parsed_start = _parse_iso_timestamp(conversation.get("startTime"))
-        if parsed_start is not None and parsed_start.timestamp() < start_cutoff:
-            continue
-        if not _conversation_matches_prompt(conversation, prompt):
-            continue
-        matched.append((_conversation_sort_key(path, conversation), path))
-    if not matched:
-        return None
-    matched.sort(key=lambda item: item[0], reverse=True)
-    return matched[0][1]
-
-
-def _fresh_prompt_session_id_since(
-    project_root: Path, start_epoch: float, prompt: str
-) -> str:
-    """Return the session id Gemini actually wrote for this prompt.
-
-    Newer Gemini CLI versions may handle ``--resume <missing-id>`` by creating
-    a fresh session instead of failing. The runner must therefore discover the
-    session file written for the current prompt even when it requested a resume.
-    """
-    candidate = _latest_fresh_chat_file_since(project_root, start_epoch, prompt)
-    if candidate is None:
-        return ""
-    conversation = _load_conversation(candidate)
-    if not conversation:
-        return ""
-    return str(conversation.get("sessionId", "")).strip()
-
-
 def _launch_interactive_process(
     command: list[str], project_root: Path
 ) -> tuple[subprocess.Popen[bytes], int]:
@@ -1572,16 +1319,9 @@ def _run_interactive_attempt(
     project_root: Path,
     *,
     resumed_session_id: str,
-    preexisting_identities: set[str] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], str]:
-    baseline_message_keys: set[str] = set(preexisting_identities or set())
-    if resumed_session_id:
-        baseline_message_keys.update(
-            _message_identity(message)
-            for message in _merged_session_messages(project_root, resumed_session_id)
-        )
+) -> subprocess.CompletedProcess[str]:
+    baseline_message_keys: set[str] = set()
     start_monotonic = time.monotonic()
-    start_epoch = time.time()
     last_pty_activity = start_monotonic
     resolved_session_id = resumed_session_id
     outcome: tuple[str, str] | None = None
@@ -1605,12 +1345,6 @@ def _run_interactive_attempt(
                 )
                 if pty_changed:
                     last_pty_activity = time.monotonic()
-
-                actual_session_id = _fresh_prompt_session_id_since(
-                    project_root, start_epoch, current_command[-1]
-                )
-                if actual_session_id and actual_session_id != resolved_session_id:
-                    resolved_session_id = actual_session_id
 
                 merged_messages: list[dict[str, object]] = []
                 if resolved_session_id:
@@ -1641,17 +1375,11 @@ def _run_interactive_attempt(
                     _close_interactive_process(process, master_fd)
                     process_closed = True
                     if status == "success":
-                        return (
-                            subprocess.CompletedProcess(
-                                current_command, 0, text, ""
-                            ),
-                            resolved_session_id,
+                        return subprocess.CompletedProcess(
+                            current_command, 0, text, ""
                         )
-                    return (
-                        subprocess.CompletedProcess(
-                            current_command, 1, "", text[:MAX_OUTPUT_CHARS]
-                        ),
-                        resolved_session_id,
+                    return subprocess.CompletedProcess(
+                        current_command, 1, "", text[:MAX_OUTPUT_CHARS]
                     )
 
                 if process.poll() is not None:
@@ -1684,18 +1412,22 @@ def _run_interactive_attempt(
                     _close_interactive_process(process, master_fd)
                     process_closed = True
                     if outcome and outcome[0] == "success":
-                        return (
-                            subprocess.CompletedProcess(
-                                current_command, 0, outcome[1], ""
-                            ),
-                            resolved_session_id,
+                        return subprocess.CompletedProcess(
+                            current_command, 0, outcome[1], ""
                         )
                     if should_resume_incomplete:
                         print(EXIT_RESUME_PROGRESS_NOTE, file=sys.stderr, flush=True)
+                        baseline_message_keys.update(
+                            _message_identity(message)
+                            for message in _merged_session_messages(
+                                project_root, resolved_session_id
+                            )
+                        )
                         current_command = _interactive_command(
                             current_command[0],
                             current_command[-1],
                             resolved_session_id,
+                            resume=True,
                         )
                         time.sleep(INTERACTIVE_POLL_SECONDS)
                         break
@@ -1704,14 +1436,11 @@ def _run_interactive_attempt(
                     )[:MAX_OUTPUT_CHARS]
                     if outcome and outcome[0] == "error":
                         stderr = outcome[1][:MAX_OUTPUT_CHARS]
-                    return (
-                        subprocess.CompletedProcess(
-                            current_command,
-                            process.returncode or 1,
-                            "",
-                            stderr,
-                        ),
-                        resolved_session_id,
+                    return subprocess.CompletedProcess(
+                        current_command,
+                        process.returncode or 1,
+                        "",
+                        stderr,
                     )
 
                 if now - start_monotonic >= timeout_seconds:
@@ -1738,9 +1467,6 @@ def _run_interactive(
     timeout_seconds: int,
     project_root: Path,
     *,
-    lane: str,
-    scope_root: Path,
-    project_roots: tuple[Path, ...] | None = None,
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -1748,35 +1474,16 @@ def _run_interactive(
     if not gemini:
         raise FileNotFoundError("gemini executable not found in PATH")
 
-    # Archiving is opt-in only. Moving live session files can split one Gemini
-    # CLI turn across multiple JSONL fragments when another process is still
-    # appending to the original path.
-    if _advisory_archive_stale_chats_enabled():
-        archived = _archive_stale_project_chats(project_root)
-        if archived is not None:
-            print(
-                f"[Gemini archive] Archived stale chats to {archived}",
-                file=sys.stderr,
-                flush=True,
-            )
-    preexisting_identities = _snapshot_preexisting_message_identities(project_root)
-
-    command = _interactive_command(gemini, prompt, "")
-    result, resolved_session_id = _run_interactive_attempt(
+    # Use an explicit UUID so concurrent advisory runs never race to discover
+    # "the latest" prompt-matching Gemini session file.
+    session_id = str(uuid4())
+    command = _interactive_command(gemini, prompt, session_id)
+    result = _run_interactive_attempt(
         command,
         timeout_seconds,
         project_root,
-        resumed_session_id="",
-        preexisting_identities=preexisting_identities,
+        resumed_session_id=session_id,
     )
-    if resolved_session_id:
-        _remember_lane_session(
-            project_root,
-            lane,
-            resolved_session_id,
-            scope_root,
-            project_roots,
-        )
     if result.returncode == 0:
         normalized_stdout = (
             output_normalizer(result.stdout)
@@ -1798,9 +1505,6 @@ def run_gemini(
     timeout_seconds: int,
     project_root: Path,
     *,
-    lane: str,
-    scope_root: Path,
-    project_roots: tuple[Path, ...] | None = None,
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -1809,9 +1513,6 @@ def run_gemini(
         prompt,
         timeout_seconds,
         project_root,
-        lane=lane,
-        scope_root=scope_root,
-        project_roots=project_roots,
         output_normalizer=output_normalizer,
         output_validator=output_validator,
     )
@@ -1893,7 +1594,6 @@ def run_advisory(
     )
     focus_root = _focus_scope_root(args.context_file, project_root, project_roots)
     context_entries = describe_paths(args.context_file, project_root, project_roots)
-    run_marker = f"{RUN_MARKER_PREFIX}{uuid4().hex[:10]}"
 
     resolved_output_contract = (
         output_contract_builder(args) if output_contract_builder else output_contract
@@ -1910,7 +1610,6 @@ def run_advisory(
         lane=lane,
         focus_root=focus_root,
         project_roots=project_roots,
-        run_marker=run_marker,
         role_line=role_line,
         output_contract=resolved_output_contract,
     )
@@ -1920,9 +1619,6 @@ def run_advisory(
             prompt,
             args.timeout_seconds,
             project_root,
-            lane=lane,
-            scope_root=focus_root,
-            project_roots=project_roots,
             output_normalizer=output_normalizer,
             output_validator=output_validator,
         )

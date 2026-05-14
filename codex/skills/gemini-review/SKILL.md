@@ -58,11 +58,11 @@ Attach only the key changed files or targeted excerpts that matter to the review
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper should inline the compact brief text into the prompt and tell Gemini to inspect the listed local paths directly on disk. Prefer passing changed-file paths over pasting large hunks when local path access is sufficient.
 
-When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner will resolve them inside the current Codex workspace, switch Gemini's `cwd` to their common ancestor inside that workspace, list each project explicitly in the prompt, and stamp the prompt with a run marker plus project-scope key.
+When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner will resolve them inside the current Codex workspace, switch Gemini's `cwd` to their common ancestor inside that workspace, and list each project explicitly in the prompt with a project-scope key.
 
-The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, start a fresh interactive Gemini review session, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
+The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, start a fresh interactive Gemini review session with an explicit `--session-id <uuid>`, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
 
-The execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's workspace session files under `~/.gemini/tmp/<project>/chats/` to detect when the current review turn is complete and recover the final answer. Before launch, it snapshots existing message identities so old session history cannot be returned as the current result. It does not move chat files by default, so concurrent Gemini processes are not disrupted.
+The execution path is interactive: `gemini --session-id <uuid> -i "<prompt>"` runs under a PTY, and the shared runner watches only Gemini session files matching that UUID under `~/.gemini/tmp/<project>/chats/` to detect when the current review turn is complete and recover the final answer. It does not scan for the newest prompt-matching chat file, so concurrent Gemini processes are not disrupted.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -95,5 +95,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_review.py` wraps Gemini CLI with the shared advisory runner, project-root execution, fresh interactive sessions, pre-run message snapshots, session-file result recovery, workspace-root exploration, workspace-only context filtering, and stable review instructions.
+- `scripts/run_gemini_review.py` wraps Gemini CLI with the shared advisory runner, project-root execution, explicit UUID-backed interactive sessions, session-file result recovery, workspace-root exploration, workspace-only context filtering, and stable review instructions.
 - [references/review-brief-template.md](references/review-brief-template.md) provides a compact template for review briefs.

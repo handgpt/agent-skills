@@ -80,7 +80,6 @@ All configuration is optional. The defaults work out of the box.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CLAUDE_GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model alias |
-| `CLAUDE_GEMINI_ADVISORY_ARCHIVE_STALE_CHATS` | `0` | Opt-in only. Set to `1` for isolated debugging runs to move existing Gemini chat files before launch; keep disabled when any other Gemini process may be active in the same workspace. |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
 ## Directory Structure
@@ -143,7 +142,8 @@ claude-code/
   Out-of-workspace paths are ignored.
 - **Read-only sandbox.** Codex CLI skills run in read-only sandbox mode.
 - **Fresh interactive sessions.** Gemini advisory passes start fresh and
-  snapshot existing messages before launch to avoid stale-context contamination.
+  use an explicit `--session-id <uuid>` for each advisory run to avoid
+  stale-context contamination and concurrent prompt-matching races.
 
 ## Differences from Codex Version
 
@@ -155,4 +155,3 @@ This is adapted from the [Codex skills](../codex/). Key differences:
 | Workspace detection | `AGENTS.md` | `CLAUDE.md` (falls back to `AGENTS.md`) |
 | Env var prefix | `CODEX_GEMINI_*` | `CLAUDE_GEMINI_*` |
 | Pitfall file | `.codex-pitfalls.md` | `.claude-pitfalls.md` |
-| Session state | `codex-lane-sessions.json` | `claude-lane-sessions.json` |
