@@ -57,7 +57,7 @@ When one error-analysis pass must intentionally cover multiple projects, repeat 
 
 The wrapper should launch Gemini from the current single-project or multi-project workspace root, send the fully assembled prompt inline, start a fresh interactive Gemini error-analysis session, run in full-access mode via `--approval-mode yolo` plus `GEMINI_SANDBOX=false`, and only pass workspace-local `--context-file` paths as priority hints.
 
-The default execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session files under `~/.gemini/tmp/<project>/chats/` to detect when the current diagnostic turn is complete and recover the final answer. Before launch, it snapshots existing message identities so old session history cannot be returned as the current result. It does not move chat files by default, so concurrent Gemini processes are not disrupted. Keep the older headless path available for comparison with `--runner-mode headless` or `CODEX_GEMINI_RUN_MODE=headless`.
+The execution path is interactive: `gemini -i "<prompt>"` runs under a PTY, and the shared runner watches Gemini's project session files under `~/.gemini/tmp/<project>/chats/` to detect when the current diagnostic turn is complete and recover the final answer. Before launch, it snapshots existing message identities so old session history cannot be returned as the current result. It does not move chat files by default, so concurrent Gemini processes are not disrupted.
 
 `--context-file` paths are priority starting hints only. Gemini runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
@@ -83,5 +83,5 @@ Out-of-workspace `--context-file` paths must be skipped rather than copied into 
 
 ## Resources
 
-- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared advisory runner, fresh interactive sessions by default, pre-run message snapshots, session-file result recovery, and a switchable headless fallback path.
+- `scripts/run_gemini_error_analysis.py` wraps Gemini CLI with the shared advisory runner, fresh interactive sessions, pre-run message snapshots, and session-file result recovery.
 - [error-brief-template.md](references/error-brief-template.md) provides a compact diagnostic brief template.

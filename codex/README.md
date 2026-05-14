@@ -47,8 +47,6 @@ They launch Gemini from the current single-project or multi-project workspace ro
 
 By default, the shared runner now uses the interactive Gemini CLI path: it opens `gemini -i "<prompt>"` under a PTY, watches the project-local Gemini session file under `~/.gemini/tmp/<project>/chats/`, and extracts the final advisory when the recorded turn becomes stable. This keeps the advisory flow closer to a human interactive session while still allowing Codex to automate startup, waiting, extraction, and shutdown.
 
-The previous headless non-interactive path is still kept in code for comparison and rollback. Switch between the two with `--runner-mode interactive|headless` or `CODEX_GEMINI_RUN_MODE=interactive|headless`.
-
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. Gemini runs from the selected workspace root and may inspect other workspace-local files when the brief requires it.
 
 When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches Gemini's `cwd` to their common ancestor inside that workspace, lists each project explicitly in the prompt, and stamps the prompt with a run marker plus project-scope key.
