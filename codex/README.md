@@ -55,6 +55,8 @@ For interactive advisory runs, the runner reads only Gemini session files matchi
 
 By default, the shared Gemini runner uses Gemini CLI's stable `pro` alias via `--model pro` so these skills prefer the latest Pro-class model without hard-coding a short-lived version string. Set `CODEX_GEMINI_MODEL` if you need to override that default.
 
+If Gemini exits after recording thoughts but before a final answer, the runner does not auto-continue by default. Set `CODEX_GEMINI_CONTINUATION_RETRIES` or pass `--continuation-retries` to allow bounded same-session continuation prompts.
+
 If the pitfall notebook is personal agent memory rather than shared team knowledge, projects should ignore `.codex-pitfalls.md`.
 
 Codex should treat the full Gemini wrapper timeout window as expected runtime. With the current defaults, a Gemini advisory run may stay quiet for up to 20 minutes without that implying failure.

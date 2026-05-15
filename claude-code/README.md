@@ -80,6 +80,7 @@ All configuration is optional. The defaults work out of the box.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CLAUDE_GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model alias |
+| `CLAUDE_GEMINI_CONTINUATION_RETRIES` | `0` | Bounded same-session continuation retries after Gemini exits or times out without a final answer |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
 ## Directory Structure

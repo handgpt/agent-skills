@@ -19,10 +19,12 @@ from uuid import uuid4
 
 
 DEFAULT_TIMEOUT_SECONDS = 1200
+DEFAULT_CONTINUATION_RETRIES = 0
 MAX_OUTPUT_CHARS = 12000
 MAX_PTY_OUTPUT_CHARS = 16000
 DEFAULT_GEMINI_MODEL = "pro"
 GEMINI_MODEL_ENV_VAR = "CODEX_GEMINI_MODEL"
+CONTINUATION_RETRIES_ENV_VAR = "CODEX_GEMINI_CONTINUATION_RETRIES"
 DEFAULT_GEMINI_FLAGS = ("--approval-mode", "yolo")
 GEMINI_SANDBOX_ENV_VAR = "GEMINI_SANDBOX"
 GEMINI_SANDBOX_DISABLED_VALUE = "false"
@@ -51,14 +53,24 @@ INTERACTIVE_ERROR_MARKERS = (
 )
 TERMINAL_TOOL_STATUSES = {"success", "error", "cancelled"}
 THOUGHT_PROGRESS_PREFIX = "[Gemini thought]"
+TOOL_PROGRESS_PREFIX = "[Gemini tool]"
+USAGE_PROGRESS_PREFIX = "[Gemini usage]"
+OUTPUT_PROGRESS_PREFIX = "[Gemini output]"
 WAIT_PROGRESS_PREFIX = "[Gemini wait]"
 MAX_THOUGHT_TEXT_CHARS = 400
+MAX_PROGRESS_TEXT_CHARS = 400
+INTERNAL_METADATA_PREFIX = "__codex_"
+INTERNAL_RECORD_PATH_FIELD = f"{INTERNAL_METADATA_PREFIX}record_path"
+INTERNAL_RECORD_NAME_FIELD = f"{INTERNAL_METADATA_PREFIX}record_name"
+INTERNAL_RECORD_INDEX_FIELD = f"{INTERNAL_METADATA_PREFIX}record_index"
+INTERNAL_RECORD_MTIME_FIELD = f"{INTERNAL_METADATA_PREFIX}record_mtime"
 EXIT_RESUME_PROGRESS_NOTE = (
     "[Gemini thought] Gemini exited before a final reply was recorded; "
     "resuming the same session and continuing to wait."
 )
 RESUME_CONTINUATION_PROMPT = (
     "Continue the previous unfinished advisory turn. Do not repeat the brief. "
+    "Preserve the previously requested language, structure, and output format. "
     "Return only the final Markdown answer requested by the previous prompt."
 )
 META_CHATTER_MARKERS = (
@@ -487,6 +499,37 @@ def configured_gemini_model() -> str:
     return model or DEFAULT_GEMINI_MODEL
 
 
+def configured_continuation_retries() -> int:
+    raw = os.environ.get(CONTINUATION_RETRIES_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_CONTINUATION_RETRIES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_CONTINUATION_RETRIES
+
+
+class GeminiInteractiveTimeout(subprocess.TimeoutExpired):
+    """TimeoutExpired variant that preserves parsed Gemini session state."""
+
+    def __init__(
+        self,
+        cmd: list[str],
+        timeout: int,
+        *,
+        output: str,
+        session_id: str,
+        completed_process: subprocess.CompletedProcess[str],
+        new_messages: list[dict[str, object]] | None = None,
+        baseline_message_texts: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(cmd, timeout, output=output)
+        self.session_id = session_id
+        self.completed_process = completed_process
+        self.new_messages = _strip_internal_messages_metadata(list(new_messages or []))
+        self.baseline_message_texts = dict(baseline_message_texts or {})
+
+
 def _gemini_environment() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("TERM", "xterm-256color")
@@ -778,6 +821,41 @@ def _parse_iso_timestamp(raw_value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _path_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _with_record_metadata(
+    message: dict[str, object],
+    path: Path,
+    record_index: int,
+    path_mtime: float,
+) -> dict[str, object]:
+    copied = dict(message)
+    copied[INTERNAL_RECORD_PATH_FIELD] = str(path)
+    copied[INTERNAL_RECORD_NAME_FIELD] = path.name
+    copied[INTERNAL_RECORD_INDEX_FIELD] = record_index
+    copied[INTERNAL_RECORD_MTIME_FIELD] = path_mtime
+    return copied
+
+
+def _strip_internal_message_metadata(message: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in message.items()
+        if not str(key).startswith(INTERNAL_METADATA_PREFIX)
+    }
+
+
+def _strip_internal_messages_metadata(
+    messages: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [_strip_internal_message_metadata(message) for message in messages]
+
+
 def _conversation_sort_key(path: Path, conversation: dict[str, object]) -> tuple[float, str]:
     for field in ("lastUpdated", "startTime"):
         parsed = _parse_iso_timestamp(conversation.get(field))
@@ -814,8 +892,10 @@ def _load_jsonl_conversation(path: Path) -> dict[str, object] | None:
         metadata: dict[str, object] = {}
         messages: list[dict[str, object]] = []
         message_order: list[str] = []  # id → insertion order for rewind
+        message_index_by_id: dict[str, int] = {}
         hit_parse_error = False
-        for line in text.splitlines():
+        path_mtime = _path_mtime(path)
+        for record_index, line in enumerate(text.splitlines()):
             line = line.strip()
             if not line:
                 continue
@@ -836,26 +916,27 @@ def _load_jsonl_conversation(path: Path) -> dict[str, object] | None:
                 except ValueError:
                     messages.clear()
                     message_order.clear()
+                    message_index_by_id.clear()
                 else:
                     removed_ids = message_order[idx:]
                     message_order = message_order[:idx]
                     id_set = set(removed_ids)
                     messages = [m for m in messages if str(m.get("id", "")) not in id_set]
+                    message_index_by_id = {
+                        str(m.get("id", "")).strip(): i for i, m in enumerate(messages)
+                    }
             elif "$set" in record:
                 patch = record["$set"]
                 if isinstance(patch, dict):
                     metadata.update(patch)
             elif "id" in record:
                 msg_id = str(record["id"]).strip()
-                existing_idx = None
-                for i, m in enumerate(messages):
-                    if str(m.get("id", "")).strip() == msg_id:
-                        existing_idx = i
-                        break
-                if existing_idx is not None:
-                    messages[existing_idx] = record
+                message_record = _with_record_metadata(record, path, record_index, path_mtime)
+                if msg_id in message_index_by_id:
+                    messages[message_index_by_id[msg_id]] = message_record
                 else:
-                    messages.append(record)
+                    message_index_by_id[msg_id] = len(messages)
+                    messages.append(message_record)
                     message_order.append(msg_id)
             elif "sessionId" in record:
                 metadata.update(record)
@@ -878,7 +959,18 @@ def _load_jsonl_conversation(path: Path) -> dict[str, object] | None:
 def _load_legacy_json_conversation(path: Path) -> dict[str, object] | None:
     """Load a legacy single-JSON session file (Gemini CLI <= v0.38)."""
     payload = _load_json_file(path)
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        path_mtime = _path_mtime(path)
+        payload = dict(payload)
+        payload["messages"] = [
+            _with_record_metadata(message, path, index, path_mtime)
+            for index, message in enumerate(messages)
+            if isinstance(message, dict)
+        ]
+    return payload
 
 
 def _load_json_file(path: Path) -> dict[str, object] | None:
@@ -954,6 +1046,22 @@ def _message_text(message: dict[str, object]) -> str:
     return _extract_text_from_content(message.get("displayContent"))
 
 
+def _token_int(tokens: dict[str, object], key: str) -> int:
+    value = tokens.get(key)
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _message_identity(message: dict[str, object]) -> str:
     message_id = str(message.get("id", "")).strip()
     if message_id:
@@ -979,6 +1087,157 @@ def _message_timestamp_sort_value(message: dict[str, object]) -> float:
     if parsed is None:
         return float("inf")
     return parsed.timestamp()
+
+
+def _message_epoch(message: dict[str, object]) -> float | None:
+    parsed = _parse_iso_timestamp(message.get("timestamp"))
+    if parsed is None:
+        return None
+    return parsed.timestamp()
+
+
+def _record_int(message: dict[str, object], key: str) -> int:
+    value = message.get(key)
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _record_epoch(message: dict[str, object]) -> float | None:
+    value = message.get(INTERNAL_RECORD_MTIME_FIELD)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _message_activity_epoch(message: dict[str, object]) -> float:
+    epochs = [
+        epoch
+        for epoch in (_message_epoch(message), _record_epoch(message))
+        if epoch is not None
+    ]
+    return max(epochs) if epochs else 0.0
+
+
+def _message_boundary_epoch(message: dict[str, object]) -> float:
+    timestamp_epoch = _message_epoch(message)
+    if timestamp_epoch is not None:
+        return timestamp_epoch
+    record_epoch = _record_epoch(message)
+    return record_epoch if record_epoch is not None else 0.0
+
+
+def _record_sort_key(message: dict[str, object]) -> tuple[float, str, int, str]:
+    return (
+        _message_activity_epoch(message),
+        str(message.get(INTERNAL_RECORD_NAME_FIELD, "")).strip(),
+        _record_int(message, INTERNAL_RECORD_INDEX_FIELD),
+        _message_identity(message),
+    )
+
+
+def _message_matches_prompt(message: dict[str, object], prompt: str) -> bool:
+    if str(message.get("type", "")).strip() != "user":
+        return False
+    message_text = _message_text(message).strip()
+    expected = prompt.strip()
+    safe_expected = _safe_prompt_argument(prompt).strip()
+    run_marker = _prompt_run_marker(prompt)
+    if run_marker and run_marker in message_text:
+        return True
+    return bool(expected) and message_text in {expected, safe_expected}
+
+
+def _latest_prompt_user_message(
+    messages: list[dict[str, object]],
+    prompt: str,
+    start_epoch: float,
+) -> dict[str, object] | None:
+    start_cutoff = start_epoch - 5.0
+    prompt_matches: list[dict[str, object]] = []
+    recent_users: list[dict[str, object]] = []
+    for message in messages:
+        if str(message.get("type", "")).strip() != "user":
+            continue
+        if _message_boundary_epoch(message) >= start_cutoff:
+            recent_users.append(message)
+        if not _message_matches_prompt(message, prompt):
+            continue
+        if _message_boundary_epoch(message) >= start_cutoff:
+            prompt_matches.append(message)
+    candidates = prompt_matches or recent_users
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda message: (_message_boundary_epoch(message), _record_sort_key(message)),
+    )
+
+
+def _baseline_message_texts(messages: list[dict[str, object]]) -> dict[str, str]:
+    return {
+        _message_identity(message): _message_text(message).strip()
+        for message in messages
+    }
+
+
+def _current_invocation_messages(
+    messages: list[dict[str, object]],
+    baseline_message_signatures: dict[str, tuple[object, ...]],
+    *,
+    prompt: str,
+    start_epoch: float,
+) -> list[dict[str, object]]:
+    changed = _changed_messages(messages, baseline_message_signatures)
+    boundary = _latest_prompt_user_message(messages, prompt, start_epoch)
+    if boundary is None:
+        return changed
+
+    boundary_identity = _message_identity(boundary)
+    boundary_epoch = _message_boundary_epoch(boundary)
+    changed_by_identity = {_message_identity(message): message for message in changed}
+    selected: list[dict[str, object]] = [boundary]
+    for identity, message in changed_by_identity.items():
+        if identity == boundary_identity:
+            continue
+        if (
+            _message_activity_epoch(message) >= boundary_epoch - 2.0
+            or _record_sort_key(message) >= _record_sort_key(boundary)
+        ):
+            selected.append(message)
+
+    selected.sort(
+        key=lambda message: (
+            0 if _message_identity(message) == boundary_identity else 1,
+            *_record_sort_key(message),
+        )
+    )
+    return selected
+
+
+def _prompt_run_marker(prompt: str) -> str:
+    marker_prefix = "- Run Marker:"
+    for line in prompt.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(marker_prefix):
+            return stripped[len(marker_prefix) :].strip()
+    return ""
 
 
 def _message_thoughts(message: dict[str, object]) -> list[dict[str, object]]:
@@ -1038,6 +1297,18 @@ def _message_progress_signature(
     )
 
 
+def _changed_messages(
+    messages: list[dict[str, object]],
+    baseline_message_signatures: dict[str, tuple[object, ...]],
+) -> list[dict[str, object]]:
+    return [
+        message
+        for message in messages
+        if baseline_message_signatures.get(_message_identity(message))
+        != _message_progress_signature(message)
+    ]
+
+
 def _latest_turn_messages(new_messages: list[dict[str, object]]) -> list[dict[str, object]]:
     last_user_index = -1
     for index, message in enumerate(new_messages):
@@ -1083,6 +1354,168 @@ def _emit_new_thought_progress(
                 flush=True,
             )
     return updated_keys
+
+
+def _progress_preview(text: str, limit: int = MAX_PROGRESS_TEXT_CHARS) -> str:
+    compact = " ".join(text.strip().split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
+def _tool_call_progress_text(tool_call: dict[str, object]) -> str:
+    name = str(tool_call.get("displayName") or tool_call.get("name") or "tool").strip()
+    status = str(tool_call.get("status", "")).strip()
+    description = str(tool_call.get("description", "")).strip()
+    args = tool_call.get("args")
+    args_text = ""
+    if isinstance(args, dict) and args:
+        args_text = json.dumps(args, ensure_ascii=False, sort_keys=True)
+    result_text = _extract_text_from_content(tool_call.get("result")).strip()
+
+    parts = [name]
+    if status:
+        parts.append(f"status={status}")
+    if description:
+        parts.append(description)
+    elif args_text:
+        parts.append(f"args={_progress_preview(args_text, 180)}")
+    if result_text:
+        parts.append(f"result={len(result_text)} chars")
+    return _progress_preview(" | ".join(parts))
+
+
+def _latest_turn_tool_entries(new_messages: list[dict[str, object]]) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    for message in _latest_turn_messages(new_messages):
+        tool_calls = message.get("toolCalls")
+        if not isinstance(tool_calls, list):
+            continue
+        message_key = _message_identity(message)
+        for index, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                continue
+            tool_key = f"{message_key}|tool|{index}|{_tool_call_signature(tool_call)}"
+            entries.append((tool_key, _tool_call_progress_text(tool_call)))
+    return entries
+
+
+def _emit_new_tool_progress(
+    new_messages: list[dict[str, object]], seen_tool_keys: set[str]
+) -> set[str]:
+    updated_keys = set(seen_tool_keys)
+    for tool_key, tool_text in _latest_turn_tool_entries(new_messages):
+        if tool_key in updated_keys:
+            continue
+        updated_keys.add(tool_key)
+        if tool_text:
+            print(f"{TOOL_PROGRESS_PREFIX} {tool_text}", file=sys.stderr, flush=True)
+    return updated_keys
+
+
+def _tokens_progress_text(tokens: dict[str, object]) -> str:
+    values = {
+        "input": _token_int(tokens, "input"),
+        "cached": _token_int(tokens, "cached"),
+        "thoughts": _token_int(tokens, "thoughts"),
+        "output": _token_int(tokens, "output"),
+        "tool": _token_int(tokens, "tool"),
+        "total": _token_int(tokens, "total"),
+    }
+    return ", ".join(f"{key}={value}" for key, value in values.items() if value)
+
+
+def _latest_turn_usage_entries(new_messages: list[dict[str, object]]) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    for message in _latest_turn_messages(new_messages):
+        tokens = message.get("tokens")
+        if not isinstance(tokens, dict):
+            continue
+        text = _tokens_progress_text(tokens)
+        if text:
+            entries.append((f"{_message_identity(message)}|usage|{text}", text))
+    return entries
+
+
+def _emit_new_usage_progress(
+    new_messages: list[dict[str, object]], seen_usage_keys: set[str]
+) -> set[str]:
+    updated_keys = set(seen_usage_keys)
+    for usage_key, usage_text in _latest_turn_usage_entries(new_messages):
+        if usage_key in updated_keys:
+            continue
+        updated_keys.add(usage_key)
+        print(f"{USAGE_PROGRESS_PREFIX} {usage_text}", file=sys.stderr, flush=True)
+    return updated_keys
+
+
+def _message_has_new_text(
+    message: dict[str, object],
+    baseline_message_texts: dict[str, str] | None,
+) -> bool:
+    text = _message_text(message).strip()
+    if not text:
+        return False
+    if baseline_message_texts is None:
+        return True
+    return baseline_message_texts.get(_message_identity(message), "") != text
+
+
+def _latest_turn_text_entries(
+    new_messages: list[dict[str, object]],
+    baseline_message_texts: dict[str, str] | None,
+) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    for message in _latest_turn_messages(new_messages):
+        if str(message.get("type", "")).strip() != "gemini":
+            continue
+        if not _message_has_new_text(message, baseline_message_texts):
+            continue
+        text = _message_text(message).strip()
+        entries.append(
+            (f"{_message_identity(message)}|text|{len(text)}", _progress_preview(text))
+        )
+    return entries
+
+
+def _emit_new_text_progress(
+    new_messages: list[dict[str, object]],
+    baseline_message_texts: dict[str, str] | None,
+    seen_text_keys: set[str],
+) -> set[str]:
+    updated_keys = set(seen_text_keys)
+    for text_key, text in _latest_turn_text_entries(new_messages, baseline_message_texts):
+        if text_key in updated_keys:
+            continue
+        updated_keys.add(text_key)
+        if text:
+            print(f"{OUTPUT_PROGRESS_PREFIX} {text}", file=sys.stderr, flush=True)
+    return updated_keys
+
+
+def _emit_turn_progress(
+    new_messages: list[dict[str, object]],
+    baseline_message_texts: dict[str, str] | None,
+    seen_progress_keys: dict[str, set[str]],
+) -> dict[str, set[str]]:
+    seen_progress_keys["thought"] = _emit_new_thought_progress(
+        new_messages,
+        seen_progress_keys.get("thought", set()),
+    )
+    seen_progress_keys["tool"] = _emit_new_tool_progress(
+        new_messages,
+        seen_progress_keys.get("tool", set()),
+    )
+    seen_progress_keys["usage"] = _emit_new_usage_progress(
+        new_messages,
+        seen_progress_keys.get("usage", set()),
+    )
+    seen_progress_keys["text"] = _emit_new_text_progress(
+        new_messages,
+        baseline_message_texts,
+        seen_progress_keys.get("text", set()),
+    )
+    return seen_progress_keys
 
 
 def _emit_wait_progress(
@@ -1207,6 +1640,7 @@ def _message_looks_like_error(message: dict[str, object]) -> bool:
 
 def _interactive_outcome(
     new_messages: list[dict[str, object]],
+    baseline_message_texts: dict[str, str] | None = None,
 ) -> tuple[str, str] | None:
     if not new_messages:
         return None
@@ -1224,10 +1658,13 @@ def _interactive_outcome(
             message
         ):
             text = _message_text(message).strip()
-            return ("error", text or message_type)
+            if baseline_message_texts is None or baseline_message_texts.get(
+                _message_identity(message), ""
+            ) != text:
+                return ("error", text or message_type)
         if message_type == "gemini":
             text = _message_text(message).strip()
-            if text:
+            if text and _message_has_new_text(message, baseline_message_texts):
                 return ("success", text)
             if _message_has_active_tool_calls(message):
                 return None
@@ -1315,20 +1752,35 @@ def _close_interactive_process(process: subprocess.Popen[bytes], master_fd: int)
 
 def _run_interactive_attempt(
     command: list[str],
+    prompt: str,
     timeout_seconds: int,
     project_root: Path,
     *,
     resumed_session_id: str,
+    continuation_retries: int = DEFAULT_CONTINUATION_RETRIES,
 ) -> subprocess.CompletedProcess[str]:
-    baseline_message_keys: set[str] = set()
+    baseline_messages = (
+        _merged_session_messages(project_root, resumed_session_id)
+        if resumed_session_id
+        else []
+    )
+    baseline_message_signatures = {
+        _message_identity(message): _message_progress_signature(message)
+        for message in baseline_messages
+    }
+    baseline_texts = _baseline_message_texts(baseline_messages)
     start_monotonic = time.monotonic()
+    turn_start_epoch = time.time()
     last_pty_activity = start_monotonic
     resolved_session_id = resumed_session_id
     outcome: tuple[str, str] | None = None
-    seen_thought_keys: set[str] = set()
+    seen_progress_keys: dict[str, set[str]] = {}
     last_wait_percent = -1
     new_messages: list[dict[str, object]] = []
     current_command = list(command)
+    active_prompt = prompt
+    early_exit_continuations = 0
+    retry_limit = max(0, int(continuation_retries))
     last_wait_percent = _emit_wait_progress(
         start_monotonic, start_monotonic, timeout_seconds, last_wait_percent
     )
@@ -1351,15 +1803,16 @@ def _run_interactive_attempt(
                     merged_messages = _merged_session_messages(
                         project_root, resolved_session_id
                     )
-                    new_messages = [
-                        message
-                        for message in merged_messages
-                        if _message_identity(message) not in baseline_message_keys
-                    ]
-                    seen_thought_keys = _emit_new_thought_progress(
-                        new_messages, seen_thought_keys
+                    new_messages = _current_invocation_messages(
+                        merged_messages,
+                        baseline_message_signatures,
+                        prompt=active_prompt,
+                        start_epoch=turn_start_epoch,
                     )
-                    outcome = _interactive_outcome(new_messages)
+                    seen_progress_keys = _emit_turn_progress(
+                        new_messages, baseline_texts, seen_progress_keys
+                    )
+                    outcome = _interactive_outcome(new_messages, baseline_texts)
                 else:
                     outcome = None
 
@@ -1392,20 +1845,22 @@ def _run_interactive_attempt(
                         merged_messages = _merged_session_messages(
                             project_root, resolved_session_id
                         )
-                        new_messages = [
-                            message
-                            for message in merged_messages
-                            if _message_identity(message) not in baseline_message_keys
-                        ]
-                        seen_thought_keys = _emit_new_thought_progress(
-                            new_messages, seen_thought_keys
+                        new_messages = _current_invocation_messages(
+                            merged_messages,
+                            baseline_message_signatures,
+                            prompt=active_prompt,
+                            start_epoch=turn_start_epoch,
                         )
-                        outcome = _interactive_outcome(new_messages)
+                        seen_progress_keys = _emit_turn_progress(
+                            new_messages, baseline_texts, seen_progress_keys
+                        )
+                        outcome = _interactive_outcome(new_messages, baseline_texts)
 
                     should_resume_incomplete = (
                         bool(resolved_session_id)
                         and outcome is None
                         and _latest_turn_has_thoughts(new_messages)
+                        and early_exit_continuations < retry_limit
                         and now - start_monotonic < timeout_seconds
                     )
 
@@ -1417,18 +1872,21 @@ def _run_interactive_attempt(
                         )
                     if should_resume_incomplete:
                         print(EXIT_RESUME_PROGRESS_NOTE, file=sys.stderr, flush=True)
-                        baseline_message_keys.update(
-                            _message_identity(message)
-                            for message in _merged_session_messages(
-                                project_root, resolved_session_id
-                            )
-                        )
+                        early_exit_continuations += 1
+                        baseline_message_signatures = {
+                            _message_identity(message): _message_progress_signature(message)
+                            for message in merged_messages
+                        }
+                        baseline_texts = _baseline_message_texts(merged_messages)
+                        active_prompt = RESUME_CONTINUATION_PROMPT
+                        turn_start_epoch = time.time()
                         current_command = _interactive_command(
                             current_command[0],
-                            current_command[-1],
+                            active_prompt,
                             resolved_session_id,
                             resume=True,
                         )
+                        seen_progress_keys = {}
                         time.sleep(INTERACTIVE_POLL_SECONDS)
                         break
                     stderr = _interactive_diagnostics(
@@ -1446,10 +1904,20 @@ def _run_interactive_attempt(
                 if now - start_monotonic >= timeout_seconds:
                     _close_interactive_process(process, master_fd)
                     process_closed = True
-                    raise subprocess.TimeoutExpired(
+                    completed = subprocess.CompletedProcess(
+                        current_command,
+                        124,
+                        "",
+                        _interactive_diagnostics(captured_output, new_messages),
+                    )
+                    raise GeminiInteractiveTimeout(
                         current_command,
                         timeout_seconds,
-                        output=_interactive_diagnostics(captured_output, new_messages),
+                        output=completed.stderr,
+                        session_id=resolved_session_id,
+                        completed_process=completed,
+                        new_messages=new_messages,
+                        baseline_message_texts=baseline_texts,
                     )
 
                 time.sleep(INTERACTIVE_POLL_SECONDS)
@@ -1469,6 +1937,7 @@ def _run_interactive(
     *,
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
+    continuation_retries: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     gemini = shutil.which("gemini")
     if not gemini:
@@ -1480,9 +1949,15 @@ def _run_interactive(
     command = _interactive_command(gemini, prompt, session_id)
     result = _run_interactive_attempt(
         command,
+        prompt,
         timeout_seconds,
         project_root,
         resumed_session_id=session_id,
+        continuation_retries=(
+            configured_continuation_retries()
+            if continuation_retries is None
+            else continuation_retries
+        ),
     )
     if result.returncode == 0:
         normalized_stdout = (
@@ -1507,6 +1982,7 @@ def run_gemini(
     *,
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
+    continuation_retries: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke Gemini CLI through the interactive runner."""
     return _run_interactive(
@@ -1515,6 +1991,7 @@ def run_gemini(
         project_root,
         output_normalizer=output_normalizer,
         output_validator=output_validator,
+        continuation_retries=continuation_retries,
     )
 
 
@@ -1548,6 +2025,16 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"End-to-end advisory timeout in seconds. Default: {DEFAULT_TIMEOUT_SECONDS}.",
+    )
+    parser.add_argument(
+        "--continuation-retries",
+        type=int,
+        default=-1,
+        help=(
+            "Number of same-session continuation prompts to try after Gemini "
+            "exits or times out without a final answer. Default: environment "
+            f"{CONTINUATION_RETRIES_ENV_VAR} or {DEFAULT_CONTINUATION_RETRIES}."
+        ),
     )
     return parser
 
@@ -1621,6 +2108,11 @@ def run_advisory(
             project_root,
             output_normalizer=output_normalizer,
             output_validator=output_validator,
+            continuation_retries=(
+                args.continuation_retries
+                if args.continuation_retries >= 0
+                else None
+            ),
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)

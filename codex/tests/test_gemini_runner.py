@@ -435,6 +435,19 @@ class GeminiRunnerTests(unittest.TestCase):
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[0]["type"], "user")
             self.assertEqual(messages[1]["type"], "gemini")
+            self.assertIn(gemini_runner.INTERNAL_RECORD_PATH_FIELD, messages[0])
+
+    def test_strip_internal_message_metadata_uses_configured_prefix(self) -> None:
+        message = {
+            "type": "gemini",
+            "content": "ok",
+            gemini_runner.INTERNAL_RECORD_PATH_FIELD: "/tmp/session.jsonl",
+            "external": "keep",
+        }
+
+        stripped = gemini_runner._strip_internal_message_metadata(message)
+
+        self.assertEqual(stripped, {"type": "gemini", "content": "ok", "external": "keep"})
 
     def test_load_jsonl_conversation_rewind_is_inclusive(self) -> None:
         """$rewindTo removes the target message AND everything after it."""
@@ -741,6 +754,75 @@ class GeminiRunnerTests(unittest.TestCase):
                 ("success", "final answer"),
             )
 
+    def test_current_invocation_messages_ignore_stale_final_answer(self) -> None:
+        prompt = "current prompt"
+        old_user = {
+            "id": "u-old",
+            "timestamp": "2026-05-07T09:00:00Z",
+            "type": "user",
+            "content": "old prompt",
+        }
+        old_final = {
+            "id": "g-old",
+            "timestamp": "2026-05-07T09:01:00Z",
+            "type": "gemini",
+            "content": "old final",
+        }
+        current_user = {
+            "id": "u-new",
+            "timestamp": "2026-05-07T10:00:00Z",
+            "type": "user",
+            "content": prompt,
+        }
+        current_thought = {
+            "id": "g-new",
+            "timestamp": "2026-05-07T10:00:10Z",
+            "type": "gemini",
+            "content": "",
+            "thoughts": [{"subject": "Working"}],
+        }
+
+        current_messages = gemini_runner._current_invocation_messages(
+            [old_user, old_final, current_user, current_thought],
+            {},
+            prompt=prompt,
+            start_epoch=0.0,
+        )
+
+        self.assertEqual([message["id"] for message in current_messages], ["u-new", "g-new"])
+        self.assertIsNone(gemini_runner._interactive_outcome(current_messages))
+
+    def test_emit_turn_progress_reports_tool_usage_and_output(self) -> None:
+        messages = [
+            {"type": "user", "content": "prompt"},
+            {
+                "id": "g1",
+                "type": "gemini",
+                "content": "final text",
+                "tokens": {"input": 10, "output": 3},
+                "toolCalls": [
+                    {
+                        "id": "tool-1",
+                        "name": "ReadFile",
+                        "status": "success",
+                        "args": {"path": "README.md"},
+                    }
+                ],
+            },
+        ]
+
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            seen = gemini_runner._emit_turn_progress(messages, {}, {})
+            seen = gemini_runner._emit_turn_progress(messages, {}, seen)
+
+        output = stderr.getvalue()
+        self.assertEqual(output.count(gemini_runner.TOOL_PROGRESS_PREFIX), 1)
+        self.assertEqual(output.count(gemini_runner.USAGE_PROGRESS_PREFIX), 1)
+        self.assertEqual(output.count(gemini_runner.OUTPUT_PROGRESS_PREFIX), 1)
+        self.assertIn("ReadFile", output)
+        self.assertIn("input=10", output)
+        self.assertIn("final text", output)
+
     def test_interactive_outcome_returns_success_after_final_gemini_message(self) -> None:
         outcome = gemini_runner._interactive_outcome(
             [
@@ -916,6 +998,7 @@ class GeminiRunnerTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 gemini_runner._run_interactive_attempt(
                     command,
+                    prompt,
                     1,
                     project_root,
                     resumed_session_id="session-a",
@@ -959,6 +1042,7 @@ class GeminiRunnerTests(unittest.TestCase):
         ):
             result = gemini_runner._run_interactive_attempt(
                 command,
+                prompt,
                 1200,
                 project_root,
                 resumed_session_id="session-a",
@@ -1081,9 +1165,11 @@ class GeminiRunnerTests(unittest.TestCase):
         ) as stderr:
             result = gemini_runner._run_interactive_attempt(
                 command,
+                prompt,
                 1200,
                 project_root,
                 resumed_session_id="session-a",
+                continuation_retries=1,
             )
 
         self.assertEqual(result.returncode, 0)
@@ -1181,9 +1267,11 @@ class GeminiRunnerTests(unittest.TestCase):
         ) as stderr:
             result = gemini_runner._run_interactive_attempt(
                 command,
+                prompt,
                 1,
                 project_root,
                 resumed_session_id="session-a",
+                continuation_retries=2,
             )
 
         self.assertEqual(result.returncode, 1)
