@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install Claude Code Gemini advisory skills.
+# Install Claude Code advisory skills.
 #
 # This script copies slash commands into the project's .claude/commands/
-# directory so they are available as /gemini-review, /gemini-error-analysis,
-# /gemini-design-checkpoint, and /pitfall-notebook inside Claude Code.
+# directory so they are available inside Claude Code.
 #
 # Usage:
 #   ./scripts/install.sh [--project-dir <path>]
@@ -40,7 +39,7 @@ fi
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 TARGET_COMMANDS="$PROJECT_DIR/.claude/commands"
 
-echo "Installing Claude Code Gemini skills..."
+echo "Installing Claude Code advisory skills..."
 echo "  Source:  $COMMANDS_SRC"
 echo "  Target:  $TARGET_COMMANDS"
 echo "  Skills:  $SKILLS_DIR"
@@ -87,6 +86,9 @@ echo "Available commands:"
 echo "  /gemini-review              - Advisory code review via Gemini CLI"
 echo "  /gemini-error-analysis      - Debugging second opinion via Gemini CLI"
 echo "  /gemini-design-checkpoint   - Design critique via Gemini CLI"
+echo "  /agy-review                 - Advisory code review via Antigravity CLI"
+echo "  /agy-error-analysis         - Debugging second opinion via Antigravity CLI"
+echo "  /agy-design-checkpoint      - Design critique via Antigravity CLI"
 echo "  /codex-review               - Advisory code review via Codex CLI"
 echo "  /codex-error-analysis       - Debugging second opinion via Codex CLI"
 echo "  /codex-design-checkpoint    - Design critique via Codex CLI"
@@ -94,6 +96,7 @@ echo "  /pitfall-notebook           - Per-project pitfall memory"
 echo ""
 echo "Prerequisites:"
 echo "  - Gemini CLI installed and available in PATH (for Gemini skills)"
+echo "  - Antigravity CLI agy installed and available in PATH (for Antigravity skills)"
 echo "  - Codex CLI installed and available in PATH (for Codex skills)"
 echo "  - Python 3.10+"
 echo ""
@@ -115,6 +118,8 @@ echo "Environment variables (optional):"
 echo "  CLAUDE_GEMINI_MODEL              Override Gemini model (default: gemini-3.1-pro-preview)"
 echo "  CLAUDE_GEMINI_CONTINUATION_RETRIES"
 echo "                                   Same-session continuation retries after no final answer (default: 0)"
+echo "  CLAUDE_AGY_CMD                  Override Antigravity CLI command (default: agy)"
+echo "  CLAUDE_AGY_PRINT_TIMEOUT        Override Antigravity print timeout passed to CLI (default: 1200s)"
 echo "  CLAUDE_CODEX_MODEL               Override Codex model (default: gpt-5.4)"
 echo "  TRACEPARENT                      W3C trace context (auto-set by Claude Code"
 echo "                                   when OTel tracing is enabled; consumed by"

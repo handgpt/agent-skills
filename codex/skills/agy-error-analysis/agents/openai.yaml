@@ -1,0 +1,6 @@
+interface:
+  display_name: "Antigravity Error Analysis"
+  short_description: "Advisory Antigravity debugging checkpoint for persistent or ambiguous failures"
+  default_prompt: "Use $agy-error-analysis after an initial local debugging pass when a non-trivial failure remains ambiguous or persists across attempts. Pass a pruned diagnostic brief and relevant local paths only."
+policy:
+  allow_implicit_invocation: true

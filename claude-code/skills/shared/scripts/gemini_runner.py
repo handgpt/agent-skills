@@ -591,10 +591,12 @@ def build_prompt(
     project_roots: tuple[Path, ...] | None = None,
     role_line: str,
     output_contract: str,
+    runner_name: str = "Gemini CLI",
 ) -> str:
     """Assemble the full prompt from a role line, output contract, and paths."""
     resolved_project_root = project_root.resolve()
     resolved_focus_root = focus_root.resolve()
+    display_runner_name = runner_name.strip() or "Gemini CLI"
     normalized_project_roots = _project_roots_in_scope(
         resolved_project_root, project_roots
     )
@@ -603,7 +605,7 @@ def build_prompt(
         resolved_focus_root = resolved_project_root
     sections = [
         role_line,
-        "You are running inside Gemini CLI on the same machine as the codebase.",
+        f"You are running inside {display_runner_name} on the same machine as the codebase.",
         (
             "Use the workspace root below as your filesystem boundary. "
             "You may inspect any local file or directory inside that workspace root "

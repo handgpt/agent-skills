@@ -1,0 +1,6 @@
+interface:
+  display_name: "Antigravity Design Checkpoint"
+  short_description: "Advisory Antigravity critique for high-impact design choices and best-practice alignment"
+  default_prompt: "Use $agy-design-checkpoint before finalizing a major technical design. Ask Antigravity to challenge both system-level architecture and module-level boundaries against official docs, community practice, and the current project constraints."
+policy:
+  allow_implicit_invocation: true

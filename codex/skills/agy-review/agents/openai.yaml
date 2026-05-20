@@ -1,0 +1,6 @@
+interface:
+  display_name: "Antigravity Review"
+  short_description: "Advisory Antigravity review for diffs, safe simplifications, and structural risks at important checkpoints"
+  default_prompt: "Use $agy-review to get a concise Antigravity CLI review after code changes are complete. At important checkpoints, ask it to run in structural mode so it inspects code structure and module boundaries in addition to the diff."
+policy:
+  allow_implicit_invocation: true

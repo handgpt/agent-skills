@@ -42,9 +42,9 @@ agent-skills/
 
 | Runtime | Status | Notes |
 | --- | --- | --- |
-| [codex](codex/README.md) | Available | Gemini design, review, error-analysis, and pitfall-notebook skills are implemented. |
+| [codex](codex/README.md) | Available | Gemini and Antigravity CLI design, review, error-analysis, and pitfall-notebook skills are implemented. |
 | [gemini-cli](gemini-cli/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
-| [claude-code](claude-code/README.md) | Available | Gemini review, error-analysis, design-checkpoint, and pitfall-notebook skills are implemented. |
+| [claude-code](claude-code/README.md) | Available | Gemini, Antigravity CLI, Codex CLI, and pitfall-notebook advisory skills are implemented. |
 | [openclaw](openclaw/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
 
 ## How To Use This Repository

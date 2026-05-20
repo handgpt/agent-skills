@@ -1,7 +1,7 @@
 # Claude Code Skills
 
-Reusable skills for Claude Code that integrate external CLI agents (Gemini CLI
-and Codex CLI) as advisory reviewers, debuggers, and design critics.
+Reusable skills for Claude Code that integrate external CLI agents (Gemini CLI,
+Antigravity CLI, and Codex CLI) as advisory reviewers, debuggers, and design critics.
 
 ## Skills
 
@@ -12,6 +12,14 @@ and Codex CLI) as advisory reviewers, debuggers, and design critics.
 | [gemini-review](skills/gemini-review/SKILL.md) | `/gemini-review` | Advisory code review after changes are complete |
 | [gemini-error-analysis](skills/gemini-error-analysis/SKILL.md) | `/gemini-error-analysis` | Debugging second opinion for non-trivial failures |
 | [gemini-design-checkpoint](skills/gemini-design-checkpoint/SKILL.md) | `/gemini-design-checkpoint` | Design critique before major technical decisions |
+
+### Antigravity CLI Skills
+
+| Skill | Slash Command | Description |
+| --- | --- | --- |
+| [agy-review](skills/agy-review/SKILL.md) | `/agy-review` | Advisory code review via Antigravity CLI |
+| [agy-error-analysis](skills/agy-error-analysis/SKILL.md) | `/agy-error-analysis` | Debugging second opinion via Antigravity CLI |
+| [agy-design-checkpoint](skills/agy-design-checkpoint/SKILL.md) | `/agy-design-checkpoint` | Design critique via Antigravity CLI |
 
 ### Codex CLI Skills
 
@@ -36,6 +44,10 @@ decisions — they provide second opinions that Claude Code evaluates.
 ```text
 Claude Code (primary)
   ├── calls Gemini CLI (advisory only)
+  │     ├── code review
+  │     ├── error analysis
+  │     └── design checkpoint
+  ├── calls Antigravity CLI (advisory only)
   │     ├── code review
   │     ├── error analysis
   │     └── design checkpoint
@@ -70,6 +82,7 @@ in each command to point to the `agent-skills` directory.
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and in PATH (for Gemini skills)
+- Antigravity CLI `agy` installed and in PATH (for Antigravity skills)
 - [Codex CLI](https://github.com/openai/codex) installed and in PATH (for Codex skills)
 - Python 3.10+
 
@@ -81,6 +94,8 @@ All configuration is optional. The defaults work out of the box.
 | --- | --- | --- |
 | `CLAUDE_GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model alias |
 | `CLAUDE_GEMINI_CONTINUATION_RETRIES` | `0` | Bounded same-session continuation retries after Gemini exits or times out without a final answer |
+| `CLAUDE_AGY_CMD` | `agy` | Antigravity CLI command or wrapper |
+| `CLAUDE_AGY_PRINT_TIMEOUT` | `1200s` | Antigravity print-mode timeout passed to `agy` when supported |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
 ## Directory Structure
@@ -92,6 +107,9 @@ claude-code/
 │   ├── gemini-review.md
 │   ├── gemini-error-analysis.md
 │   ├── gemini-design-checkpoint.md
+│   ├── agy-review.md
+│   ├── agy-error-analysis.md
+│   ├── agy-design-checkpoint.md
 │   ├── codex-review.md
 │   ├── codex-error-analysis.md
 │   ├── codex-design-checkpoint.md
@@ -110,6 +128,18 @@ claude-code/
     ├── gemini-design-checkpoint/
     │   ├── SKILL.md
     │   ├── scripts/run_gemini_design_check.py
+    │   └── references/design-brief-template.md
+    ├── agy-review/
+    │   ├── SKILL.md
+    │   ├── scripts/run_agy_review.py
+    │   └── references/review-brief-template.md
+    ├── agy-error-analysis/
+    │   ├── SKILL.md
+    │   ├── scripts/run_agy_error_analysis.py
+    │   └── references/error-brief-template.md
+    ├── agy-design-checkpoint/
+    │   ├── SKILL.md
+    │   ├── scripts/run_agy_design_check.py
     │   └── references/design-brief-template.md
     ├── pitfall-notebook/
     │   ├── SKILL.md
@@ -130,6 +160,7 @@ claude-code/
     └── shared/
         └── scripts/
             ├── gemini_runner.py        # Shared Gemini CLI runner
+            ├── agy_runner.py           # Shared Antigravity CLI runner
             └── codex_runner.py         # Shared Codex CLI runner
 ```
 
@@ -145,6 +176,8 @@ claude-code/
 - **Fresh interactive sessions.** Gemini advisory passes start fresh and
   use an explicit `--session-id <uuid>` for each advisory run to avoid
   stale-context contamination and concurrent prompt-matching races.
+- **Antigravity print mode.** Antigravity advisory passes run with `agy -p` and no model
+  flag because model selection is currently controlled by Antigravity CLI.
 
 ## Differences from Codex Version
 
@@ -155,4 +188,5 @@ This is adapted from the [Codex skills](../codex/). Key differences:
 | Skill registration | `agents/openai.yaml` | `.claude/commands/*.md` slash commands |
 | Workspace detection | `AGENTS.md` | `CLAUDE.md` (falls back to `AGENTS.md`) |
 | Env var prefix | `CODEX_GEMINI_*` | `CLAUDE_GEMINI_*` |
+| Antigravity env var prefix | `CODEX_AGY_*` | `CLAUDE_AGY_*` |
 | Pitfall file | `.codex-pitfalls.md` | `.claude-pitfalls.md` |
