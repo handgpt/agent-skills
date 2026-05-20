@@ -559,15 +559,29 @@ def _build_command(
     return args
 
 
-def _terminate_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
+def _terminate_process(process: subprocess.Popen[Any]) -> None:
+    try:
+        if process.poll() is not None:
+            return
+    except Exception:
+        pass
+    try:
+        process.terminate()
+    except Exception:
+        pass
     try:
         process.wait(timeout=AGY_SHUTDOWN_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=1)
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=1)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _read_text_file(path: Path) -> str:
@@ -583,6 +597,8 @@ def _launch_interactive(
     if pty is None:
         raise OSError("Antigravity interactive mode requires POSIX PTY support.")
     master_fd, slave_fd = pty.openpty()
+    process: subprocess.Popen[bytes] | None = None
+    slave_closed = False
     try:
         process = subprocess.Popen(
             args,
@@ -594,13 +610,50 @@ def _launch_interactive(
             start_new_session=True,
             close_fds=True,
         )
-    except Exception:
-        os.close(master_fd)
         os.close(slave_fd)
+        slave_closed = True
+        os.set_blocking(master_fd, False)
+        return process, master_fd
+    except BaseException:
+        if process is not None:
+            try:
+                _terminate_process(process)
+            except Exception:
+                pass
+        if not slave_closed:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
         raise
-    os.close(slave_fd)
-    os.set_blocking(master_fd, False)
-    return process, master_fd
+
+
+def _interactive_log_path(args: list[str]) -> Path:
+    return Path(os.path.expandvars(os.path.expanduser(_flag_value(args, "--log-file")))).resolve()
+
+
+def _build_interactive_start_state(
+    args: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    start_dt: datetime,
+) -> tuple[subprocess.Popen[bytes], int, Path]:
+    process, master_fd = _launch_interactive(args, cwd, env)
+    try:
+        log_path = _interactive_log_path(args)
+        _emit_progress("[Antigravity mode]", "interactive")
+        _emit_progress("[Antigravity cwd]", cwd)
+        _emit_progress("[Antigravity log]", f"start={start_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        _emit_progress("[Antigravity log]", log_path)
+        return process, master_fd, log_path
+    except BaseException:
+        _close_interactive(process, master_fd)
+        raise
 
 
 def _drain_pty(master_fd: int, current_output: str) -> str:
@@ -633,20 +686,40 @@ def _request_interactive_exit(master_fd: int) -> bool:
 
 def _close_interactive(process: subprocess.Popen[bytes], master_fd: int) -> None:
     deadline = time.monotonic() + AGY_SHUTDOWN_GRACE_SECONDS
-    while process.poll() is None and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        try:
+            if process.poll() is not None:
+                break
+        except Exception:
+            break
         if not _request_interactive_exit(master_fd):
             break
         time.sleep(0.2)
-    if process.poll() is None:
+    try:
+        process_running = process.poll() is None
+    except Exception:
+        process_running = False
+    if process_running:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except Exception:
-            process.terminate()
+            try:
+                process.terminate()
+            except Exception:
+                pass
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=1)
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=1)
+            except Exception:
+                pass
+        except Exception:
+            pass
     try:
         os.close(master_fd)
     except OSError:
@@ -783,11 +856,12 @@ def _run_interactive(
             "",
             "Antigravity interactive mode requires POSIX PTY support; use print mode on this platform.",
         )
-    process, master_fd = _launch_interactive(args, cwd, env)
+    process: subprocess.Popen[bytes] | None = None
+    master_fd: int | None = None
     interactive_closed = False
     captured_output = ""
     start_monotonic = time.monotonic()
-    log_path = Path(os.path.expandvars(os.path.expanduser(_flag_value(args, "--log-file")))).resolve()
+    log_path: Path | None = None
     conversation_id = ""
     transcript: Path | None = None
     records: list[dict[str, Any]] = []
@@ -797,12 +871,13 @@ def _run_interactive(
     transcript_start_index = 0
     last_wait_percent = -1
 
-    _emit_progress("[Antigravity mode]", "interactive")
-    _emit_progress("[Antigravity cwd]", cwd)
-    _emit_progress("[Antigravity log]", f"start={start_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-    _emit_progress("[Antigravity log]", log_path)
-
     try:
+        process, master_fd, log_path = _build_interactive_start_state(
+            args,
+            cwd=cwd,
+            env=env,
+            start_dt=start_dt,
+        )
         while True:
             captured_output = _drain_pty(master_fd, captured_output)
 
@@ -889,7 +964,7 @@ def _run_interactive(
                 )
             time.sleep(AGY_POLL_SECONDS)
     except BaseException:
-        if not interactive_closed:
+        if not interactive_closed and process is not None and master_fd is not None:
             _close_interactive(process, master_fd)
         raise
 

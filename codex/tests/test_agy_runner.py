@@ -226,6 +226,7 @@ class AgyRunnerTests(unittest.TestCase):
             "",
         )
 
+    @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
     def test_run_interactive_reads_transcript_and_requests_quit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -328,6 +329,69 @@ class AgyRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("POSIX PTY", result.stderr)
+
+    @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
+    def test_launch_interactive_cleans_up_when_set_blocking_fails(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.waited = False
+                self.killed = False
+
+            def poll(self) -> int | None:
+                return 0 if self.terminated else None
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.waited = True
+                raise RuntimeError("wait failed")
+
+            def kill(self) -> None:
+                self.killed = True
+                self.terminated = True
+
+        master_fd, slave_fd = os.pipe()
+        fake_process = FakeProcess()
+
+        with (
+            patch.object(agy_runner.pty, "openpty", return_value=(master_fd, slave_fd)),
+            patch.object(agy_runner.subprocess, "Popen", return_value=fake_process),
+            patch.object(agy_runner.os, "set_blocking", side_effect=OSError("boom")),
+        ):
+            with self.assertRaises(OSError):
+                agy_runner._launch_interactive(["agy", "-i", "prompt"], Path.cwd(), os.environ.copy())
+
+        self.assertTrue(fake_process.terminated)
+        self.assertTrue(fake_process.waited)
+        for fd in (master_fd, slave_fd):
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
+    def test_interactive_start_state_closes_launch_when_log_setup_fails(self) -> None:
+        class ExitedProcess:
+            def poll(self) -> int:
+                return 0
+
+        master_fd, slave_fd = os.pipe()
+        os.close(slave_fd)
+
+        with (
+            patch.object(agy_runner, "_launch_interactive", return_value=(ExitedProcess(), master_fd)),
+            patch.object(agy_runner, "_interactive_log_path", side_effect=OSError("boom")),
+        ):
+            with self.assertRaises(OSError):
+                agy_runner._build_interactive_start_state(
+                    ["agy", "-i", "prompt"],
+                    cwd=Path.cwd(),
+                    env=os.environ.copy(),
+                    start_dt=datetime.now(),
+                )
+
+        with self.assertRaises(OSError):
+            os.fstat(master_fd)
 
     def test_auth_failure_detection_requires_no_transcript_state(self) -> None:
         self.assertTrue(
