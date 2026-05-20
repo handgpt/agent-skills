@@ -7,7 +7,6 @@ import contextlib
 import errno
 import json
 import os
-import pty
 import select
 import shutil
 import subprocess
@@ -17,6 +16,11 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+try:
+    import pty
+except ImportError:  # pragma: no cover - platform dependent
+    pty = None  # type: ignore[assignment]
 
 
 DEFAULT_TIMEOUT_SECONDS = 3600
@@ -1768,6 +1772,8 @@ def _message_has_active_tool_calls(message: dict[str, object]) -> bool:
 def _launch_interactive_process(
     command: list[str], project_root: Path
 ) -> tuple[subprocess.Popen[bytes], int]:
+    if pty is None:
+        raise RuntimeError("Gemini interactive mode requires POSIX PTY support.")
     master_fd, slave_fd = pty.openpty()
     env = _gemini_environment()
     try:

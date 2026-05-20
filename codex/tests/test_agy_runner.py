@@ -6,7 +6,7 @@ import tempfile
 import textwrap
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -88,6 +88,7 @@ class AgyRunnerTests(unittest.TestCase):
         self.assertEqual(agy_runner._latest_model_text(records), "final")
 
     def test_latest_run_model_text_ignores_tool_planner_records(self) -> None:
+        start_epoch = datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp()
         records = [
             {
                 "source": "USER_EXPLICIT",
@@ -114,8 +115,115 @@ class AgyRunnerTests(unittest.TestCase):
         ]
 
         self.assertEqual(
-            agy_runner._latest_run_model_text(records, "prompt", 1770000000),
+            agy_runner._latest_run_model_text(records, "prompt", start_epoch),
             "final review",
+        )
+
+    def test_latest_run_model_text_allows_reasonable_server_clock_skew(self) -> None:
+        start_epoch = datetime(2026, 5, 20, 0, 5, tzinfo=timezone.utc).timestamp()
+        records = [
+            {
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:01:00Z",
+                "content": "same prompt",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:01:10Z",
+                "content": "current final",
+            },
+        ]
+
+        self.assertEqual(
+            agy_runner._latest_run_model_text(records, "same prompt", start_epoch),
+            "current final",
+        )
+
+    def test_latest_run_model_text_rejects_recent_duplicate_when_transcript_is_stale(self) -> None:
+        start_epoch = datetime(2026, 5, 20, 0, 5, tzinfo=timezone.utc).timestamp()
+        records = [
+            {
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:04:00Z",
+                "content": "same prompt",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:04:20Z",
+                "content": "previous final",
+            },
+        ]
+
+        self.assertEqual(
+            agy_runner._latest_run_model_text(
+                records,
+                "same prompt",
+                start_epoch,
+                transcript_epoch=start_epoch - 30,
+            ),
+            "",
+        )
+
+    def test_latest_run_model_text_ignores_records_before_current_run_baseline(self) -> None:
+        start_epoch = datetime(2026, 5, 20, 0, 5, tzinfo=timezone.utc).timestamp()
+        records = [
+            {
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:04:00Z",
+                "content": "same prompt",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:04:20Z",
+                "content": "previous final",
+            },
+        ]
+
+        self.assertEqual(
+            agy_runner._latest_run_model_text(
+                records,
+                "same prompt",
+                start_epoch,
+                transcript_epoch=start_epoch,
+                min_record_index=len(records),
+            ),
+            "",
+        )
+
+    def test_latest_run_model_text_rejects_stale_duplicate_prompt(self) -> None:
+        start_epoch = datetime(2026, 5, 20, 0, 10, tzinfo=timezone.utc).timestamp()
+        records = [
+            {
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": "2026-05-19T23:50:00Z",
+                "content": "same prompt",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": "2026-05-19T23:50:10Z",
+                "content": "stale final",
+            },
+        ]
+
+        self.assertEqual(
+            agy_runner._latest_run_model_text(records, "same prompt", start_epoch),
+            "",
         )
 
     def test_run_interactive_reads_transcript_and_requests_quit(self) -> None:
@@ -204,6 +312,22 @@ class AgyRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "final review")
+
+    def test_interactive_mode_reports_non_posix_platform(self) -> None:
+        cwd = Path.cwd()
+        with patch.object(agy_runner.os, "name", "nt"):
+            result = agy_runner._run_interactive(
+                ["agy", "-i", "prompt"],
+                cwd=cwd,
+                env=os.environ.copy(),
+                timeout_seconds=1,
+                start_dt=datetime.now(),
+                start_epoch=time.time(),
+                prompt_text="prompt",
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("POSIX PTY", result.stderr)
 
     def test_auth_failure_detection_requires_no_transcript_state(self) -> None:
         self.assertTrue(

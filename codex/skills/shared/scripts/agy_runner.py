@@ -6,7 +6,6 @@ import argparse
 import errno
 import json
 import os
-import pty
 import re
 import select
 import shlex
@@ -24,6 +23,11 @@ from typing import Any
 
 import advisory_common
 
+try:
+    import pty
+except ImportError:  # pragma: no cover - platform dependent
+    pty = None  # type: ignore[assignment]
+
 
 DEFAULT_TIMEOUT_SECONDS = 1200
 DEFAULT_MODE = "print"
@@ -38,6 +42,8 @@ AGY_PRINT_TIMEOUT_ENV_VAR = "CODEX_AGY_PRINT_TIMEOUT"
 AGY_DANGEROUS_SKIP_ENV_VAR = "CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
 AGY_POLL_SECONDS = 1.0
 AGY_SHUTDOWN_GRACE_SECONDS = 3.0
+TURN_START_SKEW_SECONDS = 300.0
+TRANSCRIPT_MTIME_SKEW_SECONDS = 2.0
 AGY_WAIT_PROGRESS_PREFIX = "[Antigravity wait]"
 ENV_ASSIGN_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 UUID_TEXT = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -55,12 +61,13 @@ AUTH_FAILURE_MARKERS = (
     "authentication required",
     "authentication timed out",
 )
+_PROGRESS_STREAM = None
 
 
 def _emit_progress(prefix: str, message: object) -> None:
     text = _clean_progress_text(message)
     if text:
-        print(f"{prefix} {text}", file=sys.stderr, flush=True)
+        print(f"{prefix} {text}", file=_PROGRESS_STREAM or sys.stderr, flush=True)
 
 
 def _clean_progress_text(value: object, *, limit: int = MAX_PROGRESS_TEXT_CHARS) -> str:
@@ -348,6 +355,24 @@ def _load_transcript(path: Path | None) -> list[dict[str, Any]]:
     return []
 
 
+def _path_mtime_epoch(path: Path | None) -> float:
+    if not path:
+        return 0.0
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _transcript_touched_for_run(path: Path | None, start_epoch: float) -> bool:
+    if start_epoch <= 0:
+        return True
+    transcript_epoch = _path_mtime_epoch(path)
+    if transcript_epoch <= 0:
+        return False
+    return transcript_epoch + TRANSCRIPT_MTIME_SKEW_SECONDS >= start_epoch
+
+
 def _record_epoch(record: dict[str, Any]) -> float:
     raw = str(record.get("created_at") or "").strip()
     if not raw:
@@ -367,15 +392,26 @@ def _is_user_input_record(record: dict[str, Any]) -> bool:
 
 
 def _turn_start_index(records: list[dict[str, Any]], prompt: str, start_epoch: float) -> int:
+    return _turn_start_index_after(records, prompt, start_epoch, 0)
+
+
+def _turn_start_index_after(
+    records: list[dict[str, Any]],
+    prompt: str,
+    start_epoch: float,
+    min_record_index: int,
+) -> int:
     prompt_text = str(prompt or "").strip()
+    lower_bound = max(0, min(int(min_record_index or 0), len(records)))
     if start_epoch > 0:
-        threshold = max(0.0, start_epoch - 2.0)
+        threshold = max(0.0, start_epoch - TURN_START_SKEW_SECONDS)
         recent_user_index = -1
-        for index in range(len(records) - 1, -1, -1):
+        for index in range(len(records) - 1, lower_bound - 1, -1):
             record = records[index]
             if not _is_user_input_record(record):
                 continue
-            if _record_epoch(record) < threshold:
+            record_epoch = _record_epoch(record)
+            if record_epoch > 0 and record_epoch < threshold:
                 continue
             if recent_user_index < 0:
                 recent_user_index = index
@@ -385,7 +421,7 @@ def _turn_start_index(records: list[dict[str, Any]], prompt: str, start_epoch: f
             return recent_user_index + 1
         return len(records) if records else 0
 
-    for index in range(len(records) - 1, -1, -1):
+    for index in range(len(records) - 1, lower_bound - 1, -1):
         record = records[index]
         if _is_user_input_record(record) and prompt_text and prompt_text in str(record.get("content") or ""):
             return index + 1
@@ -409,8 +445,23 @@ def _latest_model_text(records: list[dict[str, Any]], turn_start_index: int = 0)
     return ""
 
 
-def _latest_run_model_text(records: list[dict[str, Any]], prompt: str, start_epoch: float) -> str:
-    return _latest_model_text(records, _turn_start_index(records, prompt, start_epoch))
+def _latest_run_model_text(
+    records: list[dict[str, Any]],
+    prompt: str,
+    start_epoch: float,
+    transcript_epoch: float = 0.0,
+    min_record_index: int = 0,
+) -> str:
+    if (
+        start_epoch > 0
+        and transcript_epoch > 0
+        and transcript_epoch + TRANSCRIPT_MTIME_SKEW_SECONDS < start_epoch
+    ):
+        return ""
+    return _latest_model_text(
+        records,
+        _turn_start_index_after(records, prompt, start_epoch, min_record_index),
+    )
 
 
 def _is_auth_failure(text: str, conversation_id: str, records: list[dict[str, Any]]) -> bool:
@@ -470,7 +521,7 @@ def _emit_wait_progress(
         return last_percent
     print(
         f"{AGY_WAIT_PROGRESS_PREFIX} {percent}% ({elapsed_seconds}s/{timeout_seconds}s)",
-        file=sys.stderr,
+        file=_PROGRESS_STREAM or sys.stderr,
         flush=True,
     )
     return percent
@@ -529,6 +580,8 @@ def _read_text_file(path: Path) -> str:
 def _launch_interactive(
     args: list[str], cwd: Path, env: dict[str, str]
 ) -> tuple[subprocess.Popen[bytes], int]:
+    if pty is None:
+        raise OSError("Antigravity interactive mode requires POSIX PTY support.")
     master_fd, slave_fd = pty.openpty()
     try:
         process = subprocess.Popen(
@@ -572,7 +625,7 @@ def _drain_pty(master_fd: int, current_output: str) -> str:
 
 def _request_interactive_exit(master_fd: int) -> bool:
     try:
-        os.write(master_fd, b"/quit\r")
+        os.write(master_fd, b"/quit\r\n")
         return True
     except OSError:
         return False
@@ -623,6 +676,7 @@ def _run_print(
     transcript: Path | None = None
     records: list[dict[str, Any]] = []
     seen_steps: set[tuple[Any, str]] = set()
+    transcript_start_index = 0
     last_wait_percent = -1
 
     _emit_progress("[Antigravity mode]", "print")
@@ -651,7 +705,9 @@ def _run_print(
                         transcript = _transcript_path(conversation_id)
                         _emit_progress("[Antigravity conversation]", conversation_id)
                         _emit_progress("[Antigravity transcript]", transcript)
-                if transcript:
+                        if transcript and not _transcript_touched_for_run(transcript, start_epoch):
+                            transcript_start_index = len(_load_transcript(transcript))
+                if transcript and _transcript_touched_for_run(transcript, start_epoch):
                     records = _load_transcript(transcript)
                     seen_steps = _emit_transcript_progress(records, seen_steps)
                 last_wait_percent = _emit_wait_progress(
@@ -679,14 +735,20 @@ def _run_print(
             conversation_id = _conversation_id_from_log(log_path)
         if conversation_id and transcript is None:
             transcript = _transcript_path(conversation_id)
-        if transcript:
+        if transcript and _transcript_touched_for_run(transcript, start_epoch):
             records = _load_transcript(transcript)
             _emit_transcript_progress(records, seen_steps)
 
         stdout_text = _read_text_file(stdout_path)
         stderr_text = _read_text_file(stderr_path)
 
-        transcript_text = _latest_run_model_text(records, prompt_text, start_epoch)
+        transcript_text = _latest_run_model_text(
+            records,
+            prompt_text,
+            start_epoch,
+            _path_mtime_epoch(transcript),
+            transcript_start_index,
+        )
         auth_failure_text = _log_auth_failure(log_path) if not conversation_id else ""
         combined_diagnostics = "\n".join(
             part for part in (stdout_text, stderr_text, auth_failure_text) if part
@@ -714,7 +776,15 @@ def _run_interactive(
     start_epoch: float,
     prompt_text: str,
 ) -> subprocess.CompletedProcess[str]:
+    if os.name != "posix" or pty is None:
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            "",
+            "Antigravity interactive mode requires POSIX PTY support; use print mode on this platform.",
+        )
     process, master_fd = _launch_interactive(args, cwd, env)
+    interactive_closed = False
     captured_output = ""
     start_monotonic = time.monotonic()
     log_path = Path(os.path.expandvars(os.path.expanduser(_flag_value(args, "--log-file")))).resolve()
@@ -724,6 +794,7 @@ def _run_interactive(
     latest_text = ""
     exit_requested = False
     seen_steps: set[tuple[Any, str]] = set()
+    transcript_start_index = 0
     last_wait_percent = -1
 
     _emit_progress("[Antigravity mode]", "interactive")
@@ -741,10 +812,13 @@ def _run_interactive(
                     transcript = _transcript_path(conversation_id)
                     _emit_progress("[Antigravity conversation]", conversation_id)
                     _emit_progress("[Antigravity transcript]", transcript)
+                    if transcript and not _transcript_touched_for_run(transcript, start_epoch):
+                        transcript_start_index = len(_load_transcript(transcript))
                 elif time.monotonic() - start_monotonic >= 5:
                     auth_failure_text = _log_auth_failure(log_path)
                     if auth_failure_text:
                         _close_interactive(process, master_fd)
+                        interactive_closed = True
                         return subprocess.CompletedProcess(
                             args,
                             1,
@@ -753,9 +827,19 @@ def _run_interactive(
                         )
 
             if transcript:
-                records = _load_transcript(transcript)
-                seen_steps = _emit_transcript_progress(records, seen_steps)
-                latest_text = _latest_run_model_text(records, prompt_text, start_epoch) or latest_text
+                if _transcript_touched_for_run(transcript, start_epoch):
+                    records = _load_transcript(transcript)
+                    seen_steps = _emit_transcript_progress(records, seen_steps)
+                    latest_text = (
+                        _latest_run_model_text(
+                            records,
+                            prompt_text,
+                            start_epoch,
+                            _path_mtime_epoch(transcript),
+                            transcript_start_index,
+                        )
+                        or latest_text
+                    )
                 if latest_text and not exit_requested:
                     if _request_interactive_exit(master_fd):
                         exit_requested = True
@@ -767,10 +851,19 @@ def _run_interactive(
                     conversation_id = _conversation_id_from_log(log_path)
                 if conversation_id and transcript is None:
                     transcript = _transcript_path(conversation_id)
-                if transcript:
+                if transcript and _transcript_touched_for_run(transcript, start_epoch):
                     records = _load_transcript(transcript)
                     _emit_transcript_progress(records, seen_steps)
-                    latest_text = _latest_run_model_text(records, prompt_text, start_epoch) or latest_text
+                    latest_text = (
+                        _latest_run_model_text(
+                            records,
+                            prompt_text,
+                            start_epoch,
+                            _path_mtime_epoch(transcript),
+                            transcript_start_index,
+                        )
+                        or latest_text
+                    )
 
                 returncode = process.returncode or 0
                 effective_returncode = returncode or (
@@ -778,6 +871,7 @@ def _run_interactive(
                 )
                 text = latest_text or captured_output.strip()
                 _close_interactive(process, master_fd)
+                interactive_closed = True
                 return subprocess.CompletedProcess(args, effective_returncode, text, captured_output.strip())
 
             last_wait_percent = _emit_wait_progress(
@@ -786,6 +880,7 @@ def _run_interactive(
             if time.monotonic() - start_monotonic >= timeout_seconds:
                 captured_output = _drain_pty(master_fd, captured_output)
                 _close_interactive(process, master_fd)
+                interactive_closed = True
                 raise subprocess.TimeoutExpired(
                     args,
                     timeout_seconds,
@@ -794,7 +889,7 @@ def _run_interactive(
                 )
             time.sleep(AGY_POLL_SECONDS)
     except BaseException:
-        if process.poll() is None:
+        if not interactive_closed:
             _close_interactive(process, master_fd)
         raise
 
@@ -993,7 +1088,8 @@ def run_advisory(
                 file=sys.stderr,
             )
             return 5
-        raise
+        print(f"Antigravity {label} failed to start: {exc}", file=sys.stderr)
+        return 5
 
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
