@@ -6,9 +6,12 @@ import argparse
 import errno
 import json
 import os
+import pty
 import re
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,14 +26,20 @@ import advisory_common
 
 
 DEFAULT_TIMEOUT_SECONDS = 1200
+DEFAULT_MODE = "print"
+DEFAULT_CONFIG_PATH = "~/.codex/agy_cli.json"
 MAX_OUTPUT_CHARS = 12000
 MAX_PROGRESS_TEXT_CHARS = 500
 DEFAULT_AGY_CMD = "agy"
 AGY_CMD_ENV_VAR = "CODEX_AGY_CMD"
+AGY_MODE_ENV_VAR = "CODEX_AGY_MODE"
+AGY_CONFIG_ENV_VAR = "CODEX_AGY_CONFIG"
 AGY_PRINT_TIMEOUT_ENV_VAR = "CODEX_AGY_PRINT_TIMEOUT"
+AGY_DANGEROUS_SKIP_ENV_VAR = "CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
 AGY_POLL_SECONDS = 1.0
 AGY_SHUTDOWN_GRACE_SECONDS = 3.0
 AGY_WAIT_PROGRESS_PREFIX = "[Antigravity wait]"
+ENV_ASSIGN_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 UUID_TEXT = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 CONVERSATION_PATTERNS = (
     re.compile(rf"Created conversation\s+({UUID_TEXT})"),
@@ -39,6 +48,12 @@ CONVERSATION_PATTERNS = (
     re.compile(rf"Forwarding user message to conversation\s+({UUID_TEXT})"),
     re.compile(rf"Sending user message to conversation\s+({UUID_TEXT})"),
     re.compile(rf"--conversation=?\s*({UUID_TEXT})"),
+)
+AUTH_FAILURE_MARKERS = (
+    "you are not logged into antigravity",
+    "failed to get oauth token",
+    "authentication required",
+    "authentication timed out",
 )
 
 
@@ -72,6 +87,67 @@ def _duration_text(timeout_seconds: int) -> str:
     return f"{max(1, int(timeout_seconds))}s"
 
 
+def _config_path(config_path: str | Path | None = None) -> Path:
+    raw = str(config_path or os.getenv(AGY_CONFIG_ENV_VAR, "")).strip()
+    if not raw:
+        codex_home = os.getenv("CODEX_HOME", "").strip()
+        raw = str(Path(codex_home) / "agy_cli.json") if codex_home else DEFAULT_CONFIG_PATH
+    return Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
+
+
+def _load_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    path = _config_path(config_path)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        _emit_progress("[Antigravity config]", f"ignored unreadable config: {path}")
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _config_text(config: dict[str, Any], key: str, env_name: str = "", default: str = "") -> str:
+    if env_name:
+        raw_env = os.getenv(env_name, "").strip()
+        if raw_env:
+            return raw_env
+    value = config.get(key)
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _config_bool(config: dict[str, Any], key: str, env_name: str, default: bool) -> bool:
+    raw_env = os.getenv(env_name, "").strip() if env_name else ""
+    value: object = raw_env if raw_env else config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _normalize_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized in {"", "p", "print"}:
+        return "print"
+    if normalized in {"i", "interactive", "prompt-interactive"}:
+        return "interactive"
+    raise ValueError(f"Unsupported Antigravity mode: {mode!r}. Allowed values: print, interactive")
+
+
+def _looks_like_env_assignment(token: str) -> bool:
+    if "=" not in token:
+        return False
+    name, _value = token.split("=", 1)
+    return bool(name) and all(ch in ENV_ASSIGN_CHARS for ch in name) and not name[0].isdigit()
+
+
 def _split_cli_command(raw_command: str, fallback_args: list[str]) -> tuple[list[str], dict[str, str]]:
     text = str(raw_command or "").strip()
     if not text:
@@ -84,11 +160,9 @@ def _split_cli_command(raw_command: str, fallback_args: list[str]) -> tuple[list
     env_overrides: dict[str, str] = {}
     command_start = 0
     for index, token in enumerate(tokens):
-        if "=" not in token:
+        if not _looks_like_env_assignment(token):
             break
         name, value = token.split("=", 1)
-        if not name or not all(ch.isalnum() or ch == "_" for ch in name) or name[0].isdigit():
-            break
         env_overrides[name] = value
         command_start = index + 1
 
@@ -114,8 +188,15 @@ def _resolve_executable(binary: str) -> str:
     return ""
 
 
-def _base_command(command: str | None = None) -> tuple[list[str], dict[str, str]]:
-    raw_command = str(command or os.getenv(AGY_CMD_ENV_VAR, "") or DEFAULT_AGY_CMD)
+def _base_command(
+    command: str | None = None, config: dict[str, Any] | None = None
+) -> tuple[list[str], dict[str, str]]:
+    raw_command = str(
+        command
+        or os.getenv(AGY_CMD_ENV_VAR, "")
+        or _config_text(config or {}, "command")
+        or DEFAULT_AGY_CMD
+    )
     return _split_cli_command(raw_command, [DEFAULT_AGY_CMD])
 
 
@@ -224,6 +305,17 @@ def _conversation_id_from_log(log_path: Path | None) -> str:
     return discovered[0] if discovered else ""
 
 
+def _log_auth_failure(log_path: Path | None) -> str:
+    if not log_path or not log_path.is_file():
+        return ""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")[-MAX_OUTPUT_CHARS:]
+    except Exception:
+        return ""
+    normalized = text.lower()
+    return text.strip() if any(marker in normalized for marker in AUTH_FAILURE_MARKERS) else ""
+
+
 def _transcript_path(conversation_id: str) -> Path | None:
     if not conversation_id:
         return None
@@ -256,11 +348,60 @@ def _load_transcript(path: Path | None) -> list[dict[str, Any]]:
     return []
 
 
-def _latest_model_text(records: list[dict[str, Any]]) -> str:
-    for record in reversed(records):
+def _record_epoch(record: dict[str, Any]) -> float:
+    raw = str(record.get("created_at") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _is_user_input_record(record: dict[str, Any]) -> bool:
+    return (
+        str(record.get("source", "")).strip() == "USER_EXPLICIT"
+        and str(record.get("type", "")).strip() == "USER_INPUT"
+        and str(record.get("status", "")).strip() == "DONE"
+    )
+
+
+def _turn_start_index(records: list[dict[str, Any]], prompt: str, start_epoch: float) -> int:
+    prompt_text = str(prompt or "").strip()
+    if start_epoch > 0:
+        threshold = max(0.0, start_epoch - 2.0)
+        recent_user_index = -1
+        for index in range(len(records) - 1, -1, -1):
+            record = records[index]
+            if not _is_user_input_record(record):
+                continue
+            if _record_epoch(record) < threshold:
+                continue
+            if recent_user_index < 0:
+                recent_user_index = index
+            if prompt_text and prompt_text in str(record.get("content") or ""):
+                return index + 1
+        if recent_user_index >= 0:
+            return recent_user_index + 1
+        return len(records) if records else 0
+
+    for index in range(len(records) - 1, -1, -1):
+        record = records[index]
+        if _is_user_input_record(record) and prompt_text and prompt_text in str(record.get("content") or ""):
+            return index + 1
+    return 0
+
+
+def _latest_model_text(records: list[dict[str, Any]], turn_start_index: int = 0) -> str:
+    start_index = max(0, min(int(turn_start_index or 0), len(records)))
+    for record in reversed(records[start_index:]):
         if str(record.get("source", "")).strip() != "MODEL":
             continue
         if str(record.get("status", "")).strip() != "DONE":
+            continue
+        if str(record.get("type", "")).strip() not in {"", "PLANNER_RESPONSE"}:
+            continue
+        if record.get("tool_calls"):
             continue
         text = str(record.get("content") or "").strip()
         if text:
@@ -268,11 +409,15 @@ def _latest_model_text(records: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _latest_run_model_text(records: list[dict[str, Any]], prompt: str, start_epoch: float) -> str:
+    return _latest_model_text(records, _turn_start_index(records, prompt, start_epoch))
+
+
 def _is_auth_failure(text: str, conversation_id: str, records: list[dict[str, Any]]) -> bool:
     if conversation_id or records:
         return False
     normalized = str(text or "").lower()
-    return "authentication required" in normalized or "authentication timed out" in normalized
+    return any(marker in normalized for marker in AUTH_FAILURE_MARKERS)
 
 
 def _step_progress(record: dict[str, Any]) -> str:
@@ -338,6 +483,7 @@ def _build_command(
     prompt: str,
     print_timeout: str,
     log_file: str,
+    mode: str = "print",
     dangerously_skip_permissions: bool = True,
 ) -> list[str]:
     args = _drop_mode_prompt_flags(base_args)
@@ -349,10 +495,15 @@ def _build_command(
     if log_file:
         args = _drop_value_flags(args, {"--log-file"})
         args.extend(["--log-file", log_file])
-    if print_timeout and "--print-timeout" in help_text and not _has_flag(args, "--print-timeout"):
-        args.extend(["--print-timeout", print_timeout])
-    if not _has_flag(args, "--print", "-p", "--prompt"):
-        args.append("-p")
+
+    if mode == "print":
+        if print_timeout and "--print-timeout" in help_text and not _has_flag(args, "--print-timeout"):
+            args.extend(["--print-timeout", print_timeout])
+        if not _has_flag(args, "--print", "-p", "--prompt"):
+            args.append("-p")
+    else:
+        if not _has_flag(args, "--prompt-interactive", "-i"):
+            args.append("-i")
     args.append(_safe_prompt_argument(prompt))
     return args
 
@@ -375,6 +526,80 @@ def _read_text_file(path: Path) -> str:
         return ""
 
 
+def _launch_interactive(
+    args: list[str], cwd: Path, env: dict[str, str]
+) -> tuple[subprocess.Popen[bytes], int]:
+    master_fd, slave_fd = pty.openpty()
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=str(cwd),
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise
+    os.close(slave_fd)
+    os.set_blocking(master_fd, False)
+    return process, master_fd
+
+
+def _drain_pty(master_fd: int, current_output: str) -> str:
+    updated = current_output
+    while True:
+        try:
+            ready, _, _ = select.select([master_fd], [], [], 0)
+        except OSError:
+            return updated
+        if not ready:
+            return updated
+        try:
+            chunk = os.read(master_fd, 4096)
+        except BlockingIOError:
+            return updated
+        except OSError:
+            return updated
+        if not chunk:
+            return updated
+        updated = (updated + chunk.decode("utf-8", errors="replace"))[-MAX_OUTPUT_CHARS:]
+
+
+def _request_interactive_exit(master_fd: int) -> bool:
+    try:
+        os.write(master_fd, b"/quit\r")
+        return True
+    except OSError:
+        return False
+
+
+def _close_interactive(process: subprocess.Popen[bytes], master_fd: int) -> None:
+    deadline = time.monotonic() + AGY_SHUTDOWN_GRACE_SECONDS
+    while process.poll() is None and time.monotonic() < deadline:
+        if not _request_interactive_exit(master_fd):
+            break
+        time.sleep(0.2)
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except Exception:
+            process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+
+
 def _run_print(
     args: list[str],
     *,
@@ -382,6 +607,8 @@ def _run_print(
     env: dict[str, str],
     timeout_seconds: int,
     start_dt: datetime,
+    start_epoch: float,
+    prompt_text: str,
 ) -> subprocess.CompletedProcess[str]:
     stdout_file = tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False)
     stderr_file = tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False)
@@ -459,18 +686,117 @@ def _run_print(
         stdout_text = _read_text_file(stdout_path)
         stderr_text = _read_text_file(stderr_path)
 
-        transcript_text = _latest_model_text(records)
-        combined_diagnostics = "\n".join(part for part in (stdout_text, stderr_text) if part)
+        transcript_text = _latest_run_model_text(records, prompt_text, start_epoch)
+        auth_failure_text = _log_auth_failure(log_path) if not conversation_id else ""
+        combined_diagnostics = "\n".join(
+            part for part in (stdout_text, stderr_text, auth_failure_text) if part
+        )
         effective_returncode = returncode or (
             1 if _is_auth_failure(combined_diagnostics, conversation_id, records) else 0
         )
-        text = stdout_text.strip() or transcript_text or stderr_text.strip()
-        return subprocess.CompletedProcess(args, effective_returncode, text, stderr_text.strip())
+        text = stdout_text.strip() or transcript_text or stderr_text.strip() or auth_failure_text.strip()
+        stderr = "\n".join(part for part in (stderr_text.strip(), auth_failure_text.strip()) if part)
+        return subprocess.CompletedProcess(args, effective_returncode, text, stderr)
     finally:
         if process is not None and process.poll() is None:
             _terminate_process(process)
         stdout_path.unlink(missing_ok=True)
         stderr_path.unlink(missing_ok=True)
+
+
+def _run_interactive(
+    args: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+    start_dt: datetime,
+    start_epoch: float,
+    prompt_text: str,
+) -> subprocess.CompletedProcess[str]:
+    process, master_fd = _launch_interactive(args, cwd, env)
+    captured_output = ""
+    start_monotonic = time.monotonic()
+    log_path = Path(os.path.expandvars(os.path.expanduser(_flag_value(args, "--log-file")))).resolve()
+    conversation_id = ""
+    transcript: Path | None = None
+    records: list[dict[str, Any]] = []
+    latest_text = ""
+    exit_requested = False
+    seen_steps: set[tuple[Any, str]] = set()
+    last_wait_percent = -1
+
+    _emit_progress("[Antigravity mode]", "interactive")
+    _emit_progress("[Antigravity cwd]", cwd)
+    _emit_progress("[Antigravity log]", f"start={start_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+    _emit_progress("[Antigravity log]", log_path)
+
+    try:
+        while True:
+            captured_output = _drain_pty(master_fd, captured_output)
+
+            if not conversation_id:
+                conversation_id = _conversation_id_from_log(log_path)
+                if conversation_id:
+                    transcript = _transcript_path(conversation_id)
+                    _emit_progress("[Antigravity conversation]", conversation_id)
+                    _emit_progress("[Antigravity transcript]", transcript)
+                elif time.monotonic() - start_monotonic >= 5:
+                    auth_failure_text = _log_auth_failure(log_path)
+                    if auth_failure_text:
+                        _close_interactive(process, master_fd)
+                        return subprocess.CompletedProcess(
+                            args,
+                            1,
+                            "",
+                            "\n".join(part for part in (captured_output.strip(), auth_failure_text) if part),
+                        )
+
+            if transcript:
+                records = _load_transcript(transcript)
+                seen_steps = _emit_transcript_progress(records, seen_steps)
+                latest_text = _latest_run_model_text(records, prompt_text, start_epoch) or latest_text
+                if latest_text and not exit_requested:
+                    if _request_interactive_exit(master_fd):
+                        exit_requested = True
+                        _emit_progress("[Antigravity exit]", "requested /quit after transcript output")
+
+            if process.poll() is not None:
+                captured_output = _drain_pty(master_fd, captured_output)
+                if not conversation_id:
+                    conversation_id = _conversation_id_from_log(log_path)
+                if conversation_id and transcript is None:
+                    transcript = _transcript_path(conversation_id)
+                if transcript:
+                    records = _load_transcript(transcript)
+                    _emit_transcript_progress(records, seen_steps)
+                    latest_text = _latest_run_model_text(records, prompt_text, start_epoch) or latest_text
+
+                returncode = process.returncode or 0
+                effective_returncode = returncode or (
+                    1 if _is_auth_failure(captured_output, conversation_id, records) else 0
+                )
+                text = latest_text or captured_output.strip()
+                _close_interactive(process, master_fd)
+                return subprocess.CompletedProcess(args, effective_returncode, text, captured_output.strip())
+
+            last_wait_percent = _emit_wait_progress(
+                time.monotonic(), start_monotonic, timeout_seconds, last_wait_percent
+            )
+            if time.monotonic() - start_monotonic >= timeout_seconds:
+                captured_output = _drain_pty(master_fd, captured_output)
+                _close_interactive(process, master_fd)
+                raise subprocess.TimeoutExpired(
+                    args,
+                    timeout_seconds,
+                    output=captured_output,
+                    stderr=latest_text,
+                )
+            time.sleep(AGY_POLL_SECONDS)
+    except BaseException:
+        if process.poll() is None:
+            _close_interactive(process, master_fd)
+        raise
 
 
 def run_agy(
@@ -480,41 +806,69 @@ def run_agy(
     *,
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
+    mode: str = "",
+    config_path: str | Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke Antigravity CLI through `agy -p` print mode."""
+    """Invoke Antigravity CLI through configured print or interactive prompt mode."""
     prompt_text = str(prompt or "")
     if not prompt_text.strip():
         raise ValueError("prompt is required")
 
-    base_args, env_overrides = _base_command()
+    config = _load_config(config_path)
+    selected_mode = _normalize_mode(mode or _config_text(config, "mode", AGY_MODE_ENV_VAR, DEFAULT_MODE))
+    dangerously_skip_permissions = _config_bool(
+        config, "dangerously_skip_permissions", AGY_DANGEROUS_SKIP_ENV_VAR, True
+    )
+
+    base_args, env_overrides = _base_command(config=config)
     resolved_exe = _resolve_executable(base_args[0])
     if not resolved_exe:
         raise FileNotFoundError(
             f"agy executable not found. {AGY_CMD_ENV_VAR}={os.getenv(AGY_CMD_ENV_VAR, '')!r}, "
-            f"binary={base_args[0]!r}, PATH={os.getenv('PATH', '')!r}"
+            f"{AGY_CONFIG_ENV_VAR}={os.getenv(AGY_CONFIG_ENV_VAR, '')!r}, "
+            f"config={_config_path(config_path)}, binary={base_args[0]!r}, "
+            f"PATH={os.getenv('PATH', '')!r}. Set {AGY_CMD_ENV_VAR} or the config file's "
+            "`command` field to the absolute Antigravity CLI path."
         )
     base_args[0] = resolved_exe
 
     help_text = _probe_help(base_args, project_root, env_overrides)
     start_dt = datetime.now()
+    start_epoch = time.time()
     log_file = str(_agy_log_file(start_dt))
-    print_timeout = os.getenv(AGY_PRINT_TIMEOUT_ENV_VAR, "").strip() or _duration_text(timeout_seconds)
+    print_timeout = _config_text(
+        config, "print_timeout", AGY_PRINT_TIMEOUT_ENV_VAR, _duration_text(timeout_seconds)
+    )
     command = _build_command(
         base_args,
         help_text=help_text,
         prompt=prompt_text,
         print_timeout=print_timeout,
         log_file=log_file,
-        dangerously_skip_permissions=True,
+        mode=selected_mode,
+        dangerously_skip_permissions=dangerously_skip_permissions,
     )
 
-    result = _run_print(
-        command,
-        cwd=project_root,
-        env=_agy_environment(env_overrides),
-        timeout_seconds=timeout_seconds,
-        start_dt=start_dt,
-    )
+    if selected_mode == "print":
+        result = _run_print(
+            command,
+            cwd=project_root,
+            env=_agy_environment(env_overrides),
+            timeout_seconds=timeout_seconds,
+            start_dt=start_dt,
+            start_epoch=start_epoch,
+            prompt_text=prompt_text,
+        )
+    else:
+        result = _run_interactive(
+            command,
+            cwd=project_root,
+            env=_agy_environment(env_overrides),
+            timeout_seconds=timeout_seconds,
+            start_dt=start_dt,
+            start_epoch=start_epoch,
+            prompt_text=prompt_text,
+        )
     if result.returncode == 0:
         normalized_stdout = (
             output_normalizer(result.stdout)
@@ -628,6 +982,9 @@ def run_advisory(
         if timeout_output:
             print(timeout_output[:MAX_OUTPUT_CHARS], file=sys.stderr)
         return 4
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except OSError as exc:
         if exc.errno == errno.E2BIG:
             print(

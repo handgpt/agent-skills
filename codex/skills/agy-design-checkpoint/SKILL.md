@@ -41,7 +41,9 @@ python3 scripts/run_agy_design_check.py \
   --context-file path/to/spec-or-module
 ```
 
-The wrapper launches Antigravity CLI in print mode as `agy -p "<prompt>"`. It does not pass a model flag because Antigravity uses its default latest model route.
+The wrapper launches Antigravity CLI with the configured prompt mode. Default is print mode, `agy -p "<prompt>"`; set `CODEX_AGY_MODE=interactive` or `"mode": "interactive"` in `~/.codex/agy_cli.json` to use `agy -i "<prompt>"`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`. It does not pass a model flag because Antigravity uses its default latest model route.
+
+This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
 
 Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-design-checkpoint` workflow to `$agy-design-checkpoint` as soon as possible.
 
@@ -66,5 +68,5 @@ When one advisory pass must intentionally cover multiple projects, repeat `--pro
 
 ## Resources
 
-- `scripts/run_agy_design_check.py` wraps Antigravity CLI with project-root execution, print-mode `agy -p` invocation, workspace-local path filtering, and design-review instructions.
+- `scripts/run_agy_design_check.py` wraps Antigravity CLI with project-root execution, configurable `agy -p` or `agy -i` prompt invocation, workspace-local path filtering, and design-review instructions.
 - [references/design-brief-template.md](references/design-brief-template.md) provides a compact template for design briefs.

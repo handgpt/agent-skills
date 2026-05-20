@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import textwrap
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
@@ -37,6 +42,42 @@ class AgyRunnerTests(unittest.TestCase):
         self.assertNotIn("old-model", command)
         self.assertEqual(command[-1], 'line 1\nline "2"')
 
+    def test_build_command_uses_interactive_mode_without_print_timeout(self) -> None:
+        command = agy_runner._build_command(
+            ["agy", "--print", "old prompt"],
+            help_text="--print-timeout\n--dangerously-skip-permissions\n--log-file\n-i, --prompt-interactive",
+            prompt="prompt",
+            mode="interactive",
+            print_timeout="1200s",
+            log_file="/tmp/agy.log",
+        )
+
+        self.assertIn("-i", command)
+        self.assertNotIn("-p", command)
+        self.assertNotIn("--print", command)
+        self.assertNotIn("--print-timeout", command)
+        self.assertEqual(command[-1], "prompt")
+
+    def test_mode_can_be_loaded_from_config_or_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "agy_cli.json"
+            config_path.write_text(
+                json.dumps({"mode": "interactive", "command": "~/.local/bin/agy"}),
+                encoding="utf-8",
+            )
+
+            config = agy_runner._load_config(config_path)
+            self.assertEqual(agy_runner._normalize_mode(agy_runner._config_text(config, "mode")), "interactive")
+            self.assertEqual(agy_runner._base_command(config=config)[0], ["~/.local/bin/agy"])
+
+            with patch.dict(os.environ, {"CODEX_AGY_MODE": "print"}):
+                self.assertEqual(
+                    agy_runner._normalize_mode(
+                        agy_runner._config_text(config, "mode", agy_runner.AGY_MODE_ENV_VAR)
+                    ),
+                    "print",
+                )
+
     def test_latest_model_text_reads_last_done_model_record(self) -> None:
         records = [
             {"source": "MODEL", "status": "STREAMING", "content": "draft"},
@@ -45,6 +86,124 @@ class AgyRunnerTests(unittest.TestCase):
         ]
 
         self.assertEqual(agy_runner._latest_model_text(records), "final")
+
+    def test_latest_run_model_text_ignores_tool_planner_records(self) -> None:
+        records = [
+            {
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:00:01Z",
+                "content": "prompt",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [{"name": "view_file"}],
+                "created_at": "2026-05-20T00:00:02Z",
+                "content": "I will inspect files",
+            },
+            {
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "created_at": "2026-05-20T00:00:03Z",
+                "content": "final review",
+            },
+        ]
+
+        self.assertEqual(
+            agy_runner._latest_run_model_text(records, "prompt", 1770000000),
+            "final review",
+        )
+
+    def test_run_interactive_reads_transcript_and_requests_quit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_agy = root / "fake_agy.py"
+            fake_agy.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import os
+                    import pathlib
+                    import select
+                    import sys
+                    import time
+
+                    args = sys.argv[1:]
+                    log_path = pathlib.Path(args[args.index("--log-file") + 1])
+                    prompt = args[-1]
+                    conversation_id = "11111111-1111-1111-1111-111111111111"
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_path.write_text(f"Created conversation {conversation_id}\\n", encoding="utf-8")
+
+                    transcript_path = (
+                        pathlib.Path(os.environ["HOME"])
+                        / ".gemini"
+                        / "antigravity-cli"
+                        / "brain"
+                        / conversation_id
+                        / ".system_generated"
+                        / "logs"
+                        / "transcript.jsonl"
+                    )
+                    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+                    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    records = [
+                        {
+                            "step_index": 0,
+                            "source": "USER_EXPLICIT",
+                            "type": "USER_INPUT",
+                            "status": "DONE",
+                            "created_at": now,
+                            "content": prompt,
+                        },
+                        {
+                            "step_index": 1,
+                            "source": "MODEL",
+                            "type": "PLANNER_RESPONSE",
+                            "status": "DONE",
+                            "created_at": now,
+                            "content": "final review",
+                        },
+                    ]
+                    transcript_path.write_text(
+                        "\\n".join(json.dumps(record) for record in records) + "\\n",
+                        encoding="utf-8",
+                    )
+                    deadline = time.time() + 3
+                    while time.time() < deadline:
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if ready and "/quit" in sys.stdin.readline():
+                            break
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            log_path = root / "agy.log"
+            prompt = "prompt"
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+            start_dt = datetime.now()
+            start_epoch = time.time()
+
+            with patch.dict(os.environ, {"HOME": str(root)}):
+                result = agy_runner._run_interactive(
+                    [str(fake_agy), "--log-file", str(log_path), "-i", prompt],
+                    cwd=root,
+                    env=env,
+                    timeout_seconds=5,
+                    start_dt=start_dt,
+                    start_epoch=start_epoch,
+                    prompt_text=prompt,
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "final review")
 
     def test_auth_failure_detection_requires_no_transcript_state(self) -> None:
         self.assertTrue(
@@ -61,6 +220,17 @@ class AgyRunnerTests(unittest.TestCase):
                 [],
             )
         )
+
+    def test_log_auth_failure_reads_antigravity_login_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "agy.log"
+            log_path.write_text(
+                "Failed to get OAuth token: error getting token source: "
+                "You are not logged into Antigravity.",
+                encoding="utf-8",
+            )
+
+            self.assertIn("not logged", agy_runner._log_auth_failure(log_path))
 
     def test_load_transcript_salvages_prior_records_before_partial_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

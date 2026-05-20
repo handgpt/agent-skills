@@ -36,7 +36,9 @@ python3 $AGENT_SKILLS_DIR/claude-code/skills/agy-review/scripts/run_agy_review.p
 
 4. Read the output correctly. Validate any claim against the actual diff before acting on it. If Antigravity is unavailable, times out, or returns noise, continue and note the external review was unavailable only when it affects confidence.
 
-The runner uses `agy -p "<prompt>"` print mode and does not pass a model flag because Antigravity currently selects the model itself.
+The runner defaults to `agy -p "<prompt>"` print mode and can use `agy -i "<prompt>"` when `CLAUDE_AGY_MODE=interactive` or `"mode": "interactive"` is set in `~/.claude/agy_cli.json`. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`. It does not pass a model flag because Antigravity currently selects the model itself.
+
+This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. Re-run tests and a small advisory smoke test after upgrading `agy`.
 
 ## Guardrails
 

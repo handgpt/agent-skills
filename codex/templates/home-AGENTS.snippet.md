@@ -1,6 +1,8 @@
 ## Antigravity advisory checkpoints
 
 - Antigravity CLI (`agy`) is the Codex default external advisory reviewer. It uses Antigravity's default latest model route; the skills intentionally do not pass a model flag.
+- Antigravity advisory mode defaults to `agy -p` print mode. Set `CODEX_AGY_MODE=interactive` or `"mode": "interactive"` in `~/.codex/agy_cli.json` to use `agy -i` prompt-interactive mode.
+- These skills were smoke-tested with Antigravity CLI `agy` version `1.0.0`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 - Gemini CLI advisory skills are removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review` as soon as possible.
 - Codex must invoke `$agy-design-checkpoint` automatically before finalizing any major technical design decision such as architecture, protocol, repository layout, migration, rollout shape, runtime choice, or security boundary. The user does not need to request this explicitly.
 - Codex should invoke `$agy-error-analysis` when the same non-trivial build, test, runtime, or tooling failure persists across consecutive attempts, or when a blocker remains ambiguous after an initial local inspection. Before invoking it, Codex must prune the error context locally and pass only the highest-signal brief, log excerpt, and relevant paths.

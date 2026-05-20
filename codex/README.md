@@ -20,6 +20,7 @@ agent-skills/codex/
 ├── tests/
 │   ├── test_agy_runner.py
 │   ├── test_agy_review_prompt.py
+│   ├── test_advisory_common.py
 │   └── test_pitfall_notebook.py
 └── scripts/
     └── install.sh
@@ -40,19 +41,34 @@ The Antigravity skills are advisory only. They do not modify files and they are 
 
 Antigravity CLI (`agy`) is now the default Codex external advisory path. It uses Antigravity's default latest model route; the skills intentionally do not pass a model flag. The old Codex Gemini advisory skills were removed because Gemini CLI is expected to go offline in June 2026. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review` as soon as possible.
 
+This implementation has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. After upgrading `agy`, re-run the Codex tests and at least one advisory smoke test because prompt-mode flags, log wording, or transcript layout may change.
+
 `pitfall-notebook` is intentionally different: it updates a project-local `.codex-pitfalls.md` memory file after a meaningful error is successfully fixed.
 
 When the matching `AGENTS.md` rules are installed, Codex should run these advisory passes automatically at the relevant checkpoints. The user does not need to explicitly request the external reviewer on each turn.
 
 The wrappers pass local file and directory paths to the external reviewer so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
 
-The Antigravity runner launches `agy -p "<prompt>"` from the same single-project or multi-project workspace root. It sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
+The Antigravity runner launches from the same single-project or multi-project workspace root. By default it uses print mode, `agy -p "<prompt>"`; it can also use interactive prompt mode, `agy -i "<prompt>"`, when configured. In both modes it sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
+
+Use `~/.codex/agy_cli.json` to switch modes without editing skill code:
+
+```json
+{
+  "mode": "print",
+  "command": "agy",
+  "print_timeout": "1200s",
+  "dangerously_skip_permissions": true
+}
+```
+
+Set `"mode": "interactive"` to use `agy -i "<prompt>"`. If `agy` is not on `PATH`, set `"command": "~/.local/bin/agy"` or export `CODEX_AGY_CMD=~/.local/bin/agy`. Environment variables override the config file: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`, `CODEX_AGY_PRINT_TIMEOUT`, and `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`.
 
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. The external reviewer runs from the selected workspace root and may inspect other workspace-local files when the brief requires it.
 
 When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches the external reviewer's `cwd` to their common ancestor inside that workspace, and lists each project explicitly in the prompt with a project-scope key.
 
-Set `CODEX_AGY_CMD` only if the `agy` executable is not on `PATH` or you need a custom wrapper command. Set `CODEX_AGY_PRINT_TIMEOUT` only if you need to override the print-mode timeout passed to Antigravity CLI when supported.
+The runner resolves `CODEX_AGY_CMD` or the config `command` first, then tries `agy` on `PATH`, and finally checks `~/.local/bin/agy` when the command is the default `agy`. Set `CODEX_AGY_PRINT_TIMEOUT` only if you need to override the print-mode timeout passed to Antigravity CLI when supported.
 
 If the pitfall notebook is personal agent memory rather than shared team knowledge, projects should ignore `.codex-pitfalls.md`.
 
@@ -85,8 +101,8 @@ Install the skills and append the home-level AGENTS rules under `~/AGENTS.md`:
   pitfall notebook updater.
 - `scripts/install.sh` is the supported way to install or refresh the Codex
   runtime assets locally.
-- The install script intentionally preserves the legacy home-level marker names
-  so an upgraded installation can replace an older `AGENTS.md` block cleanly.
+- The install script writes Antigravity home-level markers and also removes the older
+  Gemini marker block during upgrades.
 
 ## Notes
 

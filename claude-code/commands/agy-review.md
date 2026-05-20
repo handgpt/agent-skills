@@ -16,6 +16,6 @@ python3 $AGENT_SKILLS_DIR/claude-code/skills/agy-review/scripts/run_agy_review.p
 
 For structural mode, add `--mode structural`.
 
-The runner uses `agy -p "<prompt>"` and does not pass a model flag. Treat Antigravity as advisory only; do not ask it to edit files or output patches.
+The runner defaults to `agy -p "<prompt>"` and can use `agy -i "<prompt>"` via `CLAUDE_AGY_MODE=interactive` or `~/.claude/agy_cli.json`. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD` or config `"command"` to the CLI path. Tested with `agy` version `1.0.0`. It does not pass a model flag. Treat Antigravity as advisory only; do not ask it to edit files or output patches.
 
 $ARGUMENTS
