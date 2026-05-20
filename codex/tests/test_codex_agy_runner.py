@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import tempfile
 import textwrap
 import time
+import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +17,37 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED_SCRIPTS = ROOT / "skills" / "shared" / "scripts"
-if str(SHARED_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SHARED_SCRIPTS))
 
-import agy_runner
-import advisory_common
+
+def _load_runner_module() -> tuple[object, object]:
+    shared_path = str(SHARED_SCRIPTS)
+    previous_path = list(sys.path)
+    previous_advisory_common = sys.modules.get("advisory_common")
+    if shared_path in sys.path:
+        sys.path.remove(shared_path)
+    sys.path.insert(0, shared_path)
+    sys.modules.pop("advisory_common", None)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "codex_agy_runner_under_test",
+            SHARED_SCRIPTS / "agy_runner.py",
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Could not load Codex agy_runner test module")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        advisory_module = sys.modules["advisory_common"]
+        return module, advisory_module
+    finally:
+        sys.path[:] = previous_path
+        if previous_advisory_common is None:
+            sys.modules.pop("advisory_common", None)
+        else:
+            sys.modules["advisory_common"] = previous_advisory_common
+
+
+agy_runner, advisory_common = _load_runner_module()
 
 
 class AgyRunnerTests(unittest.TestCase):
@@ -226,6 +254,18 @@ class AgyRunnerTests(unittest.TestCase):
             "",
         )
 
+    def test_record_epoch_treats_naive_iso_timestamp_as_utc(self) -> None:
+        self.assertEqual(
+            agy_runner._record_epoch({"created_at": "2026-05-20T00:00:00"}),
+            datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp(),
+        )
+
+    def test_record_epoch_honors_explicit_timezone_offset(self) -> None:
+        self.assertEqual(
+            agy_runner._record_epoch({"created_at": "2026-05-20T08:00:00+08:00"}),
+            datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp(),
+        )
+
     @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
     def test_run_interactive_reads_transcript_and_requests_quit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -392,6 +432,33 @@ class AgyRunnerTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             os.fstat(master_fd)
+
+    def test_close_interactive_closes_fd_when_poll_is_interrupted(self) -> None:
+        class InterruptingProcess:
+            def poll(self) -> int | None:
+                raise KeyboardInterrupt()
+
+        master_fd, slave_fd = os.pipe()
+        os.close(slave_fd)
+
+        agy_runner._close_interactive(InterruptingProcess(), master_fd)
+
+        with self.assertRaises(OSError):
+            os.fstat(master_fd)
+
+    def test_loader_restores_advisory_common_module_cache(self) -> None:
+        sentinel = types.ModuleType("advisory_common")
+        previous = sys.modules.get("advisory_common")
+        sys.modules["advisory_common"] = sentinel
+        try:
+            _module, loaded_common = _load_runner_module()
+            self.assertIs(sys.modules["advisory_common"], sentinel)
+            self.assertIsNot(loaded_common, sentinel)
+        finally:
+            if previous is None:
+                sys.modules.pop("advisory_common", None)
+            else:
+                sys.modules["advisory_common"] = previous
 
     def test_auth_failure_detection_requires_no_transcript_state(self) -> None:
         self.assertTrue(

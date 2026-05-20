@@ -17,7 +17,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -378,9 +378,12 @@ def _record_epoch(record: dict[str, Any]) -> float:
     if not raw:
         return 0.0
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _is_user_input_record(record: dict[str, Any]) -> bool:
@@ -685,45 +688,47 @@ def _request_interactive_exit(master_fd: int) -> bool:
 
 
 def _close_interactive(process: subprocess.Popen[bytes], master_fd: int) -> None:
-    deadline = time.monotonic() + AGY_SHUTDOWN_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        try:
-            if process.poll() is not None:
-                break
-        except Exception:
-            break
-        if not _request_interactive_exit(master_fd):
-            break
-        time.sleep(0.2)
     try:
-        process_running = process.poll() is None
-    except Exception:
-        process_running = False
-    if process_running:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except Exception:
+        deadline = time.monotonic() + AGY_SHUTDOWN_GRACE_SECONDS
+        while time.monotonic() < deadline:
             try:
-                process.terminate()
-            except Exception:
-                pass
+                if process.poll() is not None:
+                    break
+            except BaseException:
+                break
+            if not _request_interactive_exit(master_fd):
+                break
+            time.sleep(0.2)
         try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
+            process_running = process.poll() is None
+        except BaseException:
+            process_running = False
+        if process_running:
             try:
-                process.kill()
-            except Exception:
-                pass
+                os.killpg(process.pid, signal.SIGTERM)
+            except BaseException:
+                try:
+                    process.terminate()
+                except BaseException:
+                    pass
             try:
                 process.wait(timeout=1)
-            except Exception:
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except BaseException:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except BaseException:
+                    pass
+            except BaseException:
                 pass
-        except Exception:
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
             pass
-    try:
-        os.close(master_fd)
-    except OSError:
-        pass
 
 
 def _run_print(

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
 import os
 import sys
 import tempfile
+import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,10 +15,36 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED_SCRIPTS = ROOT / "skills" / "shared" / "scripts"
-if str(SHARED_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SHARED_SCRIPTS))
 
-import agy_runner
+
+def _load_runner_module() -> object:
+    shared_path = str(SHARED_SCRIPTS)
+    previous_path = list(sys.path)
+    previous_advisory_common = sys.modules.get("advisory_common")
+    if shared_path in sys.path:
+        sys.path.remove(shared_path)
+    sys.path.insert(0, shared_path)
+    sys.modules.pop("advisory_common", None)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "claude_code_agy_runner_under_test",
+            SHARED_SCRIPTS / "agy_runner.py",
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Could not load Claude Code agy_runner test module")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = previous_path
+        if previous_advisory_common is None:
+            sys.modules.pop("advisory_common", None)
+        else:
+            sys.modules["advisory_common"] = previous_advisory_common
+
+
+agy_runner = _load_runner_module()
 
 
 class ClaudeAgyRunnerTests(unittest.TestCase):
@@ -116,6 +144,18 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
             self.assertIn("[Antigravity step] progress", progress.getvalue())
             self.assertIn("[Antigravity wait] 10% (10s/100s)", progress.getvalue())
 
+    def test_record_epoch_treats_naive_iso_timestamp_as_utc(self) -> None:
+        self.assertEqual(
+            agy_runner._record_epoch({"created_at": "2026-05-20T00:00:00"}),
+            datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp(),
+        )
+
+    def test_record_epoch_honors_explicit_timezone_offset(self) -> None:
+        self.assertEqual(
+            agy_runner._record_epoch({"created_at": "2026-05-20T08:00:00+08:00"}),
+            datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp(),
+        )
+
     @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
     def test_launch_interactive_cleans_up_when_set_blocking_fails(self) -> None:
         class FakeProcess:
@@ -176,6 +216,32 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             os.fstat(master_fd)
+
+    def test_close_interactive_closes_fd_when_poll_is_interrupted(self) -> None:
+        class InterruptingProcess:
+            def poll(self) -> int | None:
+                raise KeyboardInterrupt()
+
+        master_fd, slave_fd = os.pipe()
+        os.close(slave_fd)
+
+        agy_runner._close_interactive(InterruptingProcess(), master_fd)
+
+        with self.assertRaises(OSError):
+            os.fstat(master_fd)
+
+    def test_loader_restores_advisory_common_module_cache(self) -> None:
+        sentinel = types.ModuleType("advisory_common")
+        previous = sys.modules.get("advisory_common")
+        sys.modules["advisory_common"] = sentinel
+        try:
+            _load_runner_module()
+            self.assertIs(sys.modules["advisory_common"], sentinel)
+        finally:
+            if previous is None:
+                sys.modules.pop("advisory_common", None)
+            else:
+                sys.modules["advisory_common"] = previous
 
 
 if __name__ == "__main__":
