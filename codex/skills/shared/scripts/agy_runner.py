@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import gemini_runner as advisory_common
+import advisory_common
 
 
 DEFAULT_TIMEOUT_SECONDS = 1200

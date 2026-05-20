@@ -58,7 +58,9 @@ python3 scripts/run_agy_review.py \
 
 When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves them inside the current Codex workspace, switches Antigravity CLI's `cwd` to their common ancestor inside that workspace, and lists each project explicitly in the prompt with a project-scope key.
 
-The wrapper launches Antigravity CLI in print mode as `agy -p "<prompt>"`. It does not pass a model flag because Antigravity currently selects the model itself.
+The wrapper launches Antigravity CLI in print mode as `agy -p "<prompt>"`. It does not pass a model flag because Antigravity uses its default latest model route.
+
+Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-review` workflow to `$agy-review` as soon as possible.
 
 `--context-file` paths are priority starting hints only. Antigravity runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 

@@ -14,7 +14,7 @@ if str(SHARED_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPTS))
 
 import agy_runner
-import gemini_runner
+import advisory_common
 
 
 class AgyRunnerTests(unittest.TestCase):
@@ -80,7 +80,7 @@ class AgyRunnerTests(unittest.TestCase):
     def test_shared_prompt_can_name_antigravity_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             project_root = Path(tmp_dir)
-            prompt = gemini_runner.build_prompt(
+            prompt = advisory_common.build_prompt(
                 project_root,
                 "brief",
                 [],

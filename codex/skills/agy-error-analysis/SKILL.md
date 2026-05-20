@@ -39,7 +39,9 @@ python3 scripts/run_agy_error_analysis.py \
   --context-file path/to/suspect/file-or-directory
 ```
 
-The wrapper launches Antigravity CLI in print mode as `agy -p "<prompt>"`. It does not pass a model flag because Antigravity currently selects the model itself.
+The wrapper launches Antigravity CLI in print mode as `agy -p "<prompt>"`. It does not pass a model flag because Antigravity uses its default latest model route.
+
+Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-error-analysis` workflow to `$agy-error-analysis` as soon as possible.
 
 `--context-file` paths are priority starting hints only. Antigravity runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
