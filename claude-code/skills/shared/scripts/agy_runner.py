@@ -61,6 +61,16 @@ AUTH_FAILURE_MARKERS = (
     "authentication required",
     "authentication timed out",
 )
+TERMINAL_LOG_FAILURE_MARKERS = (
+    "auth timed out",
+    "authentication timed out",
+    "invalid_grant",
+    "malformed auth code",
+    "resource_exhausted",
+    "individual quota reached",
+    "user location is not supported",
+    "failed_precondition",
+)
 _PROGRESS_STREAM = None
 
 
@@ -321,6 +331,17 @@ def _log_auth_failure(log_path: Path | None) -> str:
         return ""
     normalized = text.lower()
     return text.strip() if any(marker in normalized for marker in AUTH_FAILURE_MARKERS) else ""
+
+
+def _log_terminal_failure(log_path: Path | None) -> str:
+    if not log_path or not log_path.is_file():
+        return ""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")[-MAX_OUTPUT_CHARS:]
+    except Exception:
+        return ""
+    normalized = text.lower()
+    return text.strip() if any(marker in normalized for marker in TERMINAL_LOG_FAILURE_MARKERS) else ""
 
 
 def _transcript_path(conversation_id: str) -> Path | None:
@@ -827,15 +848,24 @@ def _run_print(
             _path_mtime_epoch(transcript),
             transcript_start_index,
         )
+        terminal_failure_text = _log_terminal_failure(log_path)
         auth_failure_text = _log_auth_failure(log_path) if not conversation_id else ""
         combined_diagnostics = "\n".join(
-            part for part in (stdout_text, stderr_text, auth_failure_text) if part
+            part for part in (stdout_text, stderr_text, terminal_failure_text, auth_failure_text) if part
         )
         effective_returncode = returncode or (
-            1 if _is_auth_failure(combined_diagnostics, conversation_id, records) else 0
+            1 if terminal_failure_text or _is_auth_failure(combined_diagnostics, conversation_id, records) else 0
         )
-        text = stdout_text.strip() or transcript_text or stderr_text.strip() or auth_failure_text.strip()
-        stderr = "\n".join(part for part in (stderr_text.strip(), auth_failure_text.strip()) if part)
+        text = (
+            stdout_text.strip()
+            or transcript_text
+            or stderr_text.strip()
+            or terminal_failure_text.strip()
+            or auth_failure_text.strip()
+        )
+        stderr = "\n".join(
+            part for part in (stderr_text.strip(), terminal_failure_text.strip(), auth_failure_text.strip()) if part
+        )
         return subprocess.CompletedProcess(args, effective_returncode, text, stderr)
     finally:
         if process is not None and process.poll() is None:
@@ -895,15 +925,15 @@ def _run_interactive(
                     if transcript and not _transcript_touched_for_run(transcript, start_epoch):
                         transcript_start_index = len(_load_transcript(transcript))
                 elif time.monotonic() - start_monotonic >= 5:
-                    auth_failure_text = _log_auth_failure(log_path)
-                    if auth_failure_text:
+                    terminal_failure_text = _log_terminal_failure(log_path)
+                    if terminal_failure_text:
                         _close_interactive(process, master_fd)
                         interactive_closed = True
                         return subprocess.CompletedProcess(
                             args,
                             1,
                             "",
-                            "\n".join(part for part in (captured_output.strip(), auth_failure_text) if part),
+                            "\n".join(part for part in (captured_output.strip(), terminal_failure_text) if part),
                         )
 
             if transcript:
@@ -924,6 +954,17 @@ def _run_interactive(
                     if _request_interactive_exit(master_fd):
                         exit_requested = True
                         _emit_progress("[Antigravity exit]", "requested /quit after transcript output")
+                elif not latest_text:
+                    terminal_failure_text = _log_terminal_failure(log_path)
+                    if terminal_failure_text:
+                        _close_interactive(process, master_fd)
+                        interactive_closed = True
+                        return subprocess.CompletedProcess(
+                            args,
+                            1,
+                            "",
+                            "\n".join(part for part in (captured_output.strip(), terminal_failure_text) if part),
+                        )
 
             if process.poll() is not None:
                 captured_output = _drain_pty(master_fd, captured_output)
@@ -946,13 +987,15 @@ def _run_interactive(
                     )
 
                 returncode = process.returncode or 0
+                terminal_failure_text = _log_terminal_failure(log_path)
+                diagnostics = "\n".join(part for part in (captured_output.strip(), terminal_failure_text) if part)
                 effective_returncode = returncode or (
-                    1 if _is_auth_failure(captured_output, conversation_id, records) else 0
+                    1 if terminal_failure_text or _is_auth_failure(diagnostics, conversation_id, records) else 0
                 )
                 text = latest_text or captured_output.strip()
                 _close_interactive(process, master_fd)
                 interactive_closed = True
-                return subprocess.CompletedProcess(args, effective_returncode, text, captured_output.strip())
+                return subprocess.CompletedProcess(args, effective_returncode, text, diagnostics)
 
             last_wait_percent = _emit_wait_progress(
                 time.monotonic(), start_monotonic, timeout_seconds, last_wait_percent

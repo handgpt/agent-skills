@@ -6,6 +6,8 @@ import io
 import os
 import sys
 import tempfile
+import textwrap
+import time
 import types
 import unittest
 from datetime import datetime, timezone
@@ -156,6 +158,100 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
             datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp(),
         )
 
+    def test_run_print_returns_terminal_log_failure_after_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_agy = root / "fake_agy.py"
+            fake_agy.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import pathlib
+                    import sys
+
+                    args = sys.argv[1:]
+                    log_path = pathlib.Path(args[args.index("--log-file") + 1])
+                    log_path.write_text(
+                        "Created conversation 33333333-3333-3333-3333-333333333333\\n"
+                        "agent executor error: RESOURCE_EXHAUSTED: Individual quota reached\\n",
+                        encoding="utf-8",
+                    )
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            log_path = root / "agy.log"
+
+            result = agy_runner._run_print(
+                [str(fake_agy), "--log-file", str(log_path), "-p", "prompt"],
+                cwd=root,
+                env=os.environ.copy(),
+                timeout_seconds=5,
+                start_dt=datetime.now(),
+                start_epoch=time.time(),
+                prompt_text="prompt",
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("RESOURCE_EXHAUSTED", result.stderr)
+
+    @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
+    def test_run_interactive_returns_terminal_log_failure_without_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_agy = root / "fake_agy.py"
+            fake_agy.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import pathlib
+                    import select
+                    import sys
+                    import time
+
+                    args = sys.argv[1:]
+                    log_path = pathlib.Path(args[args.index("--log-file") + 1])
+                    conversation_id = "22222222-2222-2222-2222-222222222222"
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_path.write_text(f"Created conversation {conversation_id}\\n", encoding="utf-8")
+                    time.sleep(0.2)
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write("agent executor error: RESOURCE_EXHAUSTED: Individual quota reached\\n")
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if ready and "/quit" in sys.stdin.readline():
+                            break
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            log_path = root / "agy.log"
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+
+            started = time.monotonic()
+            with (
+                patch.dict(os.environ, {"HOME": str(root)}),
+                patch.object(agy_runner, "AGY_POLL_SECONDS", 0.05),
+                patch.object(agy_runner, "AGY_SHUTDOWN_GRACE_SECONDS", 0.1),
+            ):
+                result = agy_runner._run_interactive(
+                    [str(fake_agy), "--log-file", str(log_path), "-i", "prompt"],
+                    cwd=root,
+                    env=env,
+                    timeout_seconds=5,
+                    start_dt=datetime.now(),
+                    start_epoch=time.time(),
+                    prompt_text="prompt",
+                )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("RESOURCE_EXHAUSTED", result.stderr)
+        self.assertLess(time.monotonic() - started, 2)
+
     @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
     def test_launch_interactive_cleans_up_when_set_blocking_fails(self) -> None:
         class FakeProcess:
@@ -229,6 +325,22 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             os.fstat(master_fd)
+
+    def test_log_terminal_failure_ignores_transient_login_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "agy.log"
+            log_path.write_text(
+                "Failed to get OAuth token: error getting token source: "
+                "You are not logged into Antigravity.",
+                encoding="utf-8",
+            )
+            self.assertEqual(agy_runner._log_terminal_failure(log_path), "")
+
+            log_path.write_text(
+                "agent executor error: RESOURCE_EXHAUSTED: Individual quota reached",
+                encoding="utf-8",
+            )
+            self.assertIn("RESOURCE_EXHAUSTED", agy_runner._log_terminal_failure(log_path))
 
     def test_loader_restores_advisory_common_module_cache(self) -> None:
         sentinel = types.ModuleType("advisory_common")
