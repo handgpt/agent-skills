@@ -39,15 +39,15 @@ python3 scripts/run_agy_error_analysis.py \
   --context-file path/to/suspect/file-or-directory
 ```
 
-The wrapper launches Antigravity CLI with the configured prompt mode. Default is print mode, `agy -p "<prompt>"`; set `CODEX_AGY_MODE=interactive` or `"mode": "interactive"` in `~/.codex/agy_cli.json` to use `agy -i "<prompt>"`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`. It does not pass a model flag because Antigravity uses its default latest model route.
+The wrapper launches Antigravity CLI with the configured prompt mode and model. Default is interactive prompt mode, `agy -i "<prompt>"`, with `--model "Gemini 3.5 Flash (High)"` when supported. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. Override the model with `CODEX_AGY_MODEL` or config `"model"`; supported values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 
-This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
+This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
 
 Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-error-analysis` workflow to `$agy-error-analysis` as soon as possible.
 
 `--context-file` paths are priority starting hints only. Antigravity runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 
-When one failure spans multiple projects, repeat `--project-root` for each target project root so Antigravity receives the correct project scope and runs from their common workspace ancestor.
+When one failure spans multiple projects, repeat `--project-root` for each target project root so Antigravity receives the correct project scope, runs from their common workspace ancestor, and receives the other existing roots through `--add-dir` when supported.
 
 ## Read The Output Correctly
 
@@ -65,5 +65,5 @@ When one failure spans multiple projects, repeat `--project-root` for each targe
 
 ## Resources
 
-- `scripts/run_agy_error_analysis.py` wraps Antigravity CLI with project-root execution, configurable `agy -p` or `agy -i` prompt invocation, workspace-local path filtering, and debugging instructions.
+- `scripts/run_agy_error_analysis.py` wraps Antigravity CLI with project-root execution, configurable `agy -i` or `agy -p` prompt invocation, model selection, workspace-root exploration through `--add-dir` when available, workspace-local path filtering, and debugging instructions.
 - [references/error-brief-template.md](references/error-brief-template.md) provides a compact template for diagnostic briefs.

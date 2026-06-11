@@ -23,9 +23,13 @@ python3 $AGENT_SKILLS_DIR/claude-code/skills/agy-error-analysis/scripts/run_agy_
   --output-file /tmp/agy-error-$(date +%s).md
 ```
 
-The runner defaults to `agy -p "<prompt>"` print mode and can use `agy -i "<prompt>"` when `CLAUDE_AGY_MODE=interactive` or `"mode": "interactive"` is set in `~/.claude/agy_cli.json`. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`. It does not pass a model flag because Antigravity currently selects the model itself.
+The runner defaults to `agy -p "<prompt>"` print mode and can use `agy -i "<prompt>"` when `CLAUDE_AGY_MODE=interactive` or `"mode": "interactive"` is set in `~/.claude/agy_cli.json`. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 
-This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. Re-run tests and a small advisory smoke test after upgrading `agy`.
+When supported by `agy`, the runner passes `--model "Gemini 3.5 Flash (High)"` by default. Override with `CLAUDE_AGY_MODEL` or config `"model"`. Supported values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
+
+For multi-project advisory scopes, the runner passes extra project roots through repeatable `--add-dir` flags when supported by `agy`.
+
+This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. Re-run tests and both print/interactive advisory smoke tests after upgrading `agy`.
 
 ## Guardrails
 

@@ -31,13 +31,14 @@ class AgyReviewPromptTests(unittest.TestCase):
         self.assertIn("This is structural mode", contract)
         self.assertIn("surrounding modules, sibling directories, ownership boundaries", contract)
 
-    def test_skill_docs_describe_print_mode_and_default_model(self) -> None:
+    def test_skill_docs_describe_interactive_mode_and_default_model(self) -> None:
         skill_text = (REVIEW_DIR / "SKILL.md").read_text(encoding="utf-8")
         agent_text = (REVIEW_DIR / "agents" / "openai.yaml").read_text(encoding="utf-8")
         template_text = (REVIEW_DIR / "references" / "review-brief-template.md").read_text(encoding="utf-8")
 
-        self.assertIn("agy -p", skill_text)
-        self.assertIn("does not pass a model flag", skill_text)
+        self.assertIn("agy -i", skill_text)
+        self.assertIn('`--model "Gemini 3.5 Flash (High)"`', skill_text)
+        self.assertIn("Claude Opus 4.6 (Thinking)", skill_text)
         self.assertIn("priority starting hints", skill_text)
         self.assertIn("structural mode", agent_text)
         self.assertIn("Relevant Modules Or Directories", template_text)

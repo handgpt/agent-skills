@@ -39,9 +39,9 @@ agent-skills/codex/
 
 The Antigravity skills are advisory only. They do not modify files and they are designed to fail open: if Antigravity CLI is unavailable or times out, Codex continues normally.
 
-Antigravity CLI (`agy`) is now the default Codex external advisory path. It uses Antigravity's default latest model route; the skills intentionally do not pass a model flag. The old Codex Gemini advisory skills were removed because Gemini CLI is expected to go offline in June 2026. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review` as soon as possible.
+Antigravity CLI (`agy`) is now the default Codex external advisory path. The skills pass `--model "Gemini 3.5 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. The old Codex Gemini advisory skills were removed because Gemini CLI is expected to go offline in June 2026. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review` as soon as possible.
 
-This implementation has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. After upgrading `agy`, re-run the Codex tests and at least one advisory smoke test because prompt-mode flags, log wording, or transcript layout may change.
+This implementation has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the Codex tests and at least one advisory smoke test because prompt-mode flags, log wording, or transcript layout may change.
 
 `pitfall-notebook` is intentionally different: it updates a project-local `.codex-pitfalls.md` memory file after a meaningful error is successfully fixed.
 
@@ -49,24 +49,25 @@ When the matching `AGENTS.md` rules are installed, Codex should run these adviso
 
 The wrappers pass local file and directory paths to the external reviewer so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
 
-The Antigravity runner launches from the same single-project or multi-project workspace root. By default it uses print mode, `agy -p "<prompt>"`; it can also use interactive prompt mode, `agy -i "<prompt>"`, when configured. In both modes it sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
+The Antigravity runner launches from the same single-project or multi-project workspace root. By default it uses interactive prompt mode, `agy -i "<prompt>"`; set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. In both modes it sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
 
-Use `~/.codex/agy_cli.json` to switch modes without editing skill code:
+Use `~/.codex/agy_cli.json` to switch modes or models without editing skill code:
 
 ```json
 {
-  "mode": "print",
+  "mode": "interactive",
   "command": "agy",
+  "model": "Gemini 3.5 Flash (High)",
   "print_timeout": "1200s",
   "dangerously_skip_permissions": true
 }
 ```
 
-Set `"mode": "interactive"` to use `agy -i "<prompt>"`. If `agy` is not on `PATH`, set `"command": "~/.local/bin/agy"` or export `CODEX_AGY_CMD=~/.local/bin/agy`. Environment variables override the config file: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`, `CODEX_AGY_PRINT_TIMEOUT`, and `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`.
+If `agy` is not on `PATH`, set `"command": "~/.local/bin/agy"` or export `CODEX_AGY_CMD=~/.local/bin/agy`. Environment variables override the config file: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`, `CODEX_AGY_MODEL`, `CODEX_AGY_PRINT_TIMEOUT`, and `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`.
 
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. The external reviewer runs from the selected workspace root and may inspect other workspace-local files when the brief requires it.
 
-When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches the external reviewer's `cwd` to their common ancestor inside that workspace, and lists each project explicitly in the prompt with a project-scope key.
+When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches the external reviewer's `cwd` to their common ancestor inside that workspace, passes the other existing project roots with `--add-dir` when supported, and lists each project explicitly in the prompt with a project-scope key.
 
 The runner resolves `CODEX_AGY_CMD` or the config `command` first, then tries `agy` on `PATH`, and finally checks `~/.local/bin/agy` when the command is the default `agy`. Set `CODEX_AGY_PRINT_TIMEOUT` only if you need to override the print-mode timeout passed to Antigravity CLI when supported.
 

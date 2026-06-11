@@ -50,6 +50,112 @@ agy_runner = _load_runner_module()
 
 
 class ClaudeAgyRunnerTests(unittest.TestCase):
+    def test_build_command_adds_default_model_and_workspace_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            extra_dir = root / "extra"
+            extra_dir.mkdir()
+            help_text = "\n".join(
+                [
+                    "--add-dir",
+                    "--dangerously-skip-permissions",
+                    "--log-file",
+                    "--model",
+                    "--print",
+                    "--print-timeout",
+                ]
+            )
+
+            command = agy_runner._build_command(
+                ["agy", "--model", "old-model"],
+                help_text=help_text,
+                prompt="prompt",
+                print_timeout="1200s",
+                log_file=str(root / "agy.log"),
+                model=agy_runner.DEFAULT_AGY_MODEL,
+                add_dirs=(extra_dir,),
+                mode="print",
+            )
+
+        self.assertEqual(command[0], "agy")
+        self.assertNotIn("old-model", command)
+        self.assertEqual(command[command.index("--model") + 1], "Gemini 3.5 Flash (High)")
+        self.assertEqual(command[command.index("--add-dir") + 1], str(extra_dir.resolve()))
+        self.assertIn("--dangerously-skip-permissions", command)
+        self.assertIn("--print-timeout", command)
+        self.assertIn("-p", command)
+        self.assertEqual(command[-1], "prompt")
+
+    def test_build_command_drops_unsupported_managed_flags(self) -> None:
+        command = agy_runner._build_command(
+            [
+                "agy",
+                "--dangerously-skip-permissions",
+                "--print-timeout",
+                "10s",
+                "--add-dir",
+                "/tmp/old-extra",
+            ],
+            help_text="--log-file\n-i, --prompt-interactive",
+            prompt="prompt",
+            mode="interactive",
+            print_timeout="1200s",
+            log_file="/tmp/agy.log",
+            model=agy_runner.DEFAULT_AGY_MODEL,
+        )
+
+        self.assertNotIn("--dangerously-skip-permissions", command)
+        self.assertNotIn("--print-timeout", command)
+        self.assertNotIn("10s", command)
+        self.assertNotIn("--add-dir", command)
+        self.assertNotIn("/tmp/old-extra", command)
+        self.assertIn("-i", command)
+
+    def test_probe_help_uses_full_base_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_cli = root / "fake_cli.py"
+            fake_cli.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import sys
+
+                    if sys.argv[1:] == ["run", "agy", "--help"]:
+                        print("--model\\n--add-dir")
+                    else:
+                        print("wrong command")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+
+            help_text = agy_runner._probe_help([sys.executable, str(fake_cli), "run", "agy"], root, {})
+
+        self.assertIn("--model", help_text)
+        self.assertIn("--add-dir", help_text)
+        self.assertNotIn("wrong command", help_text)
+
+    def test_configured_model_rejects_unsupported_values(self) -> None:
+        with patch.dict(os.environ, {"CLAUDE_AGY_MODEL": "Gemini 3.5 Flash (Low)"}):
+            with self.assertRaisesRegex(ValueError, "Unsupported Antigravity model"):
+                agy_runner._configured_agy_model({})
+
+    def test_project_add_dirs_excludes_primary_root_and_missing_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            project_a = root / "a"
+            project_b = root / "b"
+            missing = root / "missing"
+            project_a.mkdir()
+            project_b.mkdir()
+
+            self.assertEqual(
+                agy_runner._project_add_dirs(root, (project_a, project_b, missing, project_a)),
+                (project_a.resolve(), project_b.resolve()),
+            )
+
     def test_latest_run_model_text_rejects_recent_duplicate_when_transcript_is_stale(self) -> None:
         start_epoch = datetime(2026, 5, 20, 0, 5, tzinfo=timezone.utc).timestamp()
         records = [

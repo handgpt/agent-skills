@@ -56,11 +56,11 @@ python3 scripts/run_agy_review.py \
 
 `--brief-file` and `--context-file` are local filesystem paths. The wrapper inlines the compact brief text into the prompt and tells Antigravity to inspect the listed local paths directly on disk.
 
-When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves them inside the current Codex workspace, switches Antigravity CLI's `cwd` to their common ancestor inside that workspace, and lists each project explicitly in the prompt with a project-scope key.
+When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves them inside the current Codex workspace, switches Antigravity CLI's `cwd` to their common ancestor inside that workspace, passes the other existing project roots through `--add-dir` when supported, and lists each project explicitly in the prompt with a project-scope key.
 
-The wrapper launches Antigravity CLI with the configured prompt mode. Default is print mode, `agy -p "<prompt>"`; set `CODEX_AGY_MODE=interactive` or `"mode": "interactive"` in `~/.codex/agy_cli.json` to use `agy -i "<prompt>"`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`. It does not pass a model flag because Antigravity uses its default latest model route.
+The wrapper launches Antigravity CLI with the configured prompt mode and model. Default is interactive prompt mode, `agy -i "<prompt>"`, with `--model "Gemini 3.5 Flash (High)"` when supported. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. Override the model with `CODEX_AGY_MODEL` or config `"model"`; supported values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 
-This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
+This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
 
 Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-review` workflow to `$agy-review` as soon as possible.
 
@@ -89,5 +89,5 @@ Out-of-workspace `--context-file` paths are skipped rather than copied into the 
 
 ## Resources
 
-- `scripts/run_agy_review.py` wraps Antigravity CLI with the shared advisory runner, project-root execution, configurable `agy -p` or `agy -i` prompt invocation, workspace-root exploration, workspace-only context filtering, and stable review instructions.
+- `scripts/run_agy_review.py` wraps Antigravity CLI with the shared advisory runner, project-root execution, configurable `agy -i` or `agy -p` prompt invocation, model selection, workspace-root exploration through `--add-dir` when available, workspace-only context filtering, and stable review instructions.
 - [references/review-brief-template.md](references/review-brief-template.md) provides a compact template for review briefs.

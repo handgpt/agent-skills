@@ -97,11 +97,12 @@ All configuration is optional. The defaults work out of the box.
 | `CLAUDE_AGY_CMD` | `agy` | Antigravity CLI command or wrapper |
 | `CLAUDE_AGY_MODE` | `print` | Antigravity prompt mode: `print` for `agy -p`, `interactive` for `agy -i` |
 | `CLAUDE_AGY_CONFIG` | `~/.claude/agy_cli.json` | Optional Antigravity CLI config JSON path |
+| `CLAUDE_AGY_MODEL` | `Gemini 3.5 Flash (High)` | Antigravity model passed through `--model` when supported. Supported: `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, `Claude Opus 4.6 (Thinking)` |
 | `CLAUDE_AGY_PRINT_TIMEOUT` | `1200s` | Antigravity print-mode timeout passed to `agy` when supported |
 | `CLAUDE_AGY_DANGEROUSLY_SKIP_PERMISSIONS` | `true` | Auto-approve Antigravity CLI tool permissions when supported |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
-The Antigravity integration has been smoke-tested with Antigravity CLI `agy` version `1.0.0`. After upgrading `agy`, re-run the local tests and at least one advisory smoke test because prompt-mode flags, log wording, or transcript layout may change. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD=~/.local/bin/agy` or put `"command": "~/.local/bin/agy"` in `~/.claude/agy_cli.json`.
+The Antigravity integration has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the local tests and both print and interactive advisory smoke tests because prompt-mode flags, log wording, or transcript layout may change. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD=~/.local/bin/agy` or put `"command": "~/.local/bin/agy"` in `~/.claude/agy_cli.json`.
 
 ## Directory Structure
 
@@ -183,8 +184,9 @@ claude-code/
   stale-context contamination and concurrent prompt-matching races.
 - **Configurable Antigravity prompt mode.** Antigravity advisory passes default
   to `agy -p`, can switch to `agy -i` with `CLAUDE_AGY_MODE=interactive` or
-  `"mode": "interactive"` in `~/.claude/agy_cli.json`, and pass no model flag
-  because model selection is currently controlled by Antigravity CLI.
+  `"mode": "interactive"` in `~/.claude/agy_cli.json`, pass
+  `--model "Gemini 3.5 Flash (High)"` by default when supported, and pass
+  extra multi-project roots through repeatable `--add-dir` flags.
 
 ## Differences from Codex Version
 

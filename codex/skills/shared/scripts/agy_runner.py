@@ -30,14 +30,22 @@ except ImportError:  # pragma: no cover - platform dependent
 
 
 DEFAULT_TIMEOUT_SECONDS = 1200
-DEFAULT_MODE = "print"
+DEFAULT_MODE = "interactive"
 DEFAULT_CONFIG_PATH = "~/.codex/agy_cli.json"
+DEFAULT_AGY_MODEL = "Gemini 3.5 Flash (High)"
+SUPPORTED_AGY_MODELS = (
+    "Gemini 3.5 Flash (High)",
+    "Gemini 3.1 Pro (High)",
+    "Claude Sonnet 4.6 (Thinking)",
+    "Claude Opus 4.6 (Thinking)",
+)
 MAX_OUTPUT_CHARS = 12000
 MAX_PROGRESS_TEXT_CHARS = 500
 DEFAULT_AGY_CMD = "agy"
 AGY_CMD_ENV_VAR = "CODEX_AGY_CMD"
 AGY_MODE_ENV_VAR = "CODEX_AGY_MODE"
 AGY_CONFIG_ENV_VAR = "CODEX_AGY_CONFIG"
+AGY_MODEL_ENV_VAR = "CODEX_AGY_MODEL"
 AGY_PRINT_TIMEOUT_ENV_VAR = "CODEX_AGY_PRINT_TIMEOUT"
 AGY_DANGEROUS_SKIP_ENV_VAR = "CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
 AGY_POLL_SECONDS = 1.0
@@ -231,7 +239,7 @@ def _probe_help(args: list[str], cwd: Path, env_overrides: dict[str, str]) -> st
     try:
         env = _agy_environment(env_overrides)
         proc = subprocess.run(
-            [args[0], "--help"],
+            [*args, "--help"],
             text=True,
             capture_output=True,
             cwd=str(cwd),
@@ -257,6 +265,32 @@ def _flag_value(args: list[str], *flags: str) -> str:
             if token.startswith(prefix):
                 return token[len(prefix) :].strip()
     return ""
+
+
+def _flag_values(args: list[str], *flags: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        matched = False
+        for flag in flags:
+            if token == flag:
+                if index + 1 < len(args):
+                    values.append(str(args[index + 1]).strip())
+                    index += 2
+                else:
+                    index += 1
+                matched = True
+                break
+            prefix = f"{flag}="
+            if token.startswith(prefix):
+                values.append(token[len(prefix) :].strip())
+                index += 1
+                matched = True
+                break
+        if not matched:
+            index += 1
+    return [value for value in values if value]
 
 
 def _drop_mode_prompt_flags(args: list[str]) -> list[str]:
@@ -289,6 +323,38 @@ def _drop_value_flags(args: list[str], flags: set[str]) -> list[str]:
             continue
         updated.append(token)
         index += 1
+    return updated
+
+
+def _drop_bool_flags(args: list[str], flags: set[str]) -> list[str]:
+    return [
+        token
+        for token in args
+        if token not in flags and not any(token.startswith(f"{flag}=") for flag in flags)
+    ]
+
+
+def _configured_agy_model(config: dict[str, Any]) -> str:
+    model = _config_text(config, "model", AGY_MODEL_ENV_VAR, DEFAULT_AGY_MODEL)
+    if not model:
+        return DEFAULT_AGY_MODEL
+    if model not in SUPPORTED_AGY_MODELS:
+        supported = ", ".join(SUPPORTED_AGY_MODELS)
+        raise ValueError(f"Unsupported Antigravity model: {model!r}. Supported models: {supported}")
+    return model
+
+
+def _append_add_dirs(args: list[str], help_text: str, add_dirs: tuple[Path, ...]) -> list[str]:
+    if "--add-dir" not in help_text or not add_dirs:
+        return args
+    updated = list(args)
+    existing = set(_flag_values(updated, "--add-dir"))
+    for path in add_dirs:
+        value = str(path.expanduser().resolve())
+        if value in existing:
+            continue
+        updated.extend(["--add-dir", value])
+        existing.add(value)
     return updated
 
 
@@ -558,25 +624,38 @@ def _build_command(
     prompt: str,
     print_timeout: str,
     log_file: str,
+    model: str,
+    add_dirs: tuple[Path, ...] = (),
     mode: str = "print",
     dangerously_skip_permissions: bool = True,
 ) -> list[str]:
     args = _drop_mode_prompt_flags(base_args)
     args = _drop_value_flags(args, {"--model", "-m"})
-    if dangerously_skip_permissions and "--dangerously-skip-permissions" in help_text and not _has_flag(
-        args, "--dangerously-skip-permissions"
-    ):
-        args.append("--dangerously-skip-permissions")
+    if model and "--model" in help_text:
+        args.extend(["--model", model])
+    if "--add-dir" in help_text:
+        args = _append_add_dirs(args, help_text, add_dirs)
+    else:
+        args = _drop_value_flags(args, {"--add-dir"})
+    if dangerously_skip_permissions and "--dangerously-skip-permissions" in help_text:
+        if not _has_flag(args, "--dangerously-skip-permissions"):
+            args.append("--dangerously-skip-permissions")
+    else:
+        args = _drop_bool_flags(args, {"--dangerously-skip-permissions"})
     if log_file:
         args = _drop_value_flags(args, {"--log-file"})
         args.extend(["--log-file", log_file])
 
     if mode == "print":
-        if print_timeout and "--print-timeout" in help_text and not _has_flag(args, "--print-timeout"):
-            args.extend(["--print-timeout", print_timeout])
+        if "--print-timeout" in help_text:
+            if print_timeout and not _has_flag(args, "--print-timeout"):
+                args.extend(["--print-timeout", print_timeout])
+        else:
+            args = _drop_value_flags(args, {"--print-timeout"})
         if not _has_flag(args, "--print", "-p", "--prompt"):
             args.append("-p")
     else:
+        args = _drop_value_flags(args, {"--print-timeout"})
         if not _has_flag(args, "--prompt-interactive", "-i"):
             args.append("-i")
     args.append(_safe_prompt_argument(prompt))
@@ -1022,6 +1101,7 @@ def run_agy(
     timeout_seconds: int,
     project_root: Path,
     *,
+    add_dirs: tuple[Path, ...] = (),
     output_normalizer: Callable[[str], str] | None = None,
     output_validator: Callable[[str], str] | None = None,
     mode: str = "",
@@ -1034,6 +1114,7 @@ def run_agy(
 
     config = _load_config(config_path)
     selected_mode = _normalize_mode(mode or _config_text(config, "mode", AGY_MODE_ENV_VAR, DEFAULT_MODE))
+    model = _configured_agy_model(config)
     dangerously_skip_permissions = _config_bool(
         config, "dangerously_skip_permissions", AGY_DANGEROUS_SKIP_ENV_VAR, True
     )
@@ -1063,6 +1144,8 @@ def run_agy(
         prompt=prompt_text,
         print_timeout=print_timeout,
         log_file=log_file,
+        model=model,
+        add_dirs=add_dirs,
         mode=selected_mode,
         dangerously_skip_permissions=dangerously_skip_permissions,
     )
@@ -1128,6 +1211,21 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
     return parser
 
 
+def _project_add_dirs(project_root: Path, project_roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    resolved_project_root = project_root.resolve()
+    add_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for root in project_roots:
+        resolved_root = root.resolve()
+        if resolved_root == resolved_project_root or resolved_root in seen:
+            continue
+        if not resolved_root.exists() or not resolved_root.is_dir():
+            continue
+        seen.add(resolved_root)
+        add_dirs.append(resolved_root)
+    return tuple(add_dirs)
+
+
 def run_advisory(
     *,
     description: str,
@@ -1188,6 +1286,7 @@ def run_advisory(
             prompt,
             args.timeout_seconds,
             project_root,
+            add_dirs=_project_add_dirs(project_root, project_roots),
             output_normalizer=output_normalizer,
             output_validator=output_validator,
         )
