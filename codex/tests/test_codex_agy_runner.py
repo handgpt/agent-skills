@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 import os
+import subprocess
 import tempfile
 import textwrap
 import time
@@ -178,6 +181,27 @@ class AgyRunnerTests(unittest.TestCase):
                     "print",
                 )
 
+    def test_config_int_can_be_loaded_from_config_or_env(self) -> None:
+        self.assertEqual(
+            agy_runner._config_int(
+                {"auth_retries": "3"},
+                "auth_retries",
+                agy_runner.AGY_AUTH_RETRIES_ENV_VAR,
+                agy_runner.DEFAULT_AGY_AUTH_RETRIES,
+            ),
+            3,
+        )
+        with patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "2"}):
+            self.assertEqual(
+                agy_runner._config_int(
+                    {"auth_retries": "3"},
+                    "auth_retries",
+                    agy_runner.AGY_AUTH_RETRIES_ENV_VAR,
+                    agy_runner.DEFAULT_AGY_AUTH_RETRIES,
+                ),
+                2,
+            )
+
     def test_configured_model_rejects_unsupported_values(self) -> None:
         with patch.dict(os.environ, {"CODEX_AGY_MODEL": "Gemini 3.5 Flash (Low)"}):
             with self.assertRaisesRegex(ValueError, "Unsupported Antigravity model"):
@@ -190,6 +214,7 @@ class AgyRunnerTests(unittest.TestCase):
             self.assertEqual(agy_runner.DEFAULT_CONFIG_PATH, "~/.claude/agy_cli.json")
             self.assertEqual(agy_runner.AGY_CMD_ENV_VAR, "CLAUDE_AGY_CMD")
             self.assertEqual(agy_runner.AGY_MODEL_ENV_VAR, "CLAUDE_AGY_MODEL")
+            self.assertEqual(agy_runner.AGY_AUTH_RETRIES_ENV_VAR, "CLAUDE_AGY_AUTH_RETRIES")
             self.assertTrue(agy_runner.ENABLE_OUTPUT_FILE_ARGUMENT)
             self.assertTrue(
                 any(action.dest == "output_file" for action in agy_runner.make_arg_parser("test")._actions)
@@ -200,6 +225,7 @@ class AgyRunnerTests(unittest.TestCase):
             self.assertEqual(agy_runner.DEFAULT_CONFIG_PATH, "~/.codex/agy_cli.json")
             self.assertEqual(agy_runner.AGY_CMD_ENV_VAR, "CODEX_AGY_CMD")
             self.assertEqual(agy_runner.AGY_MODEL_ENV_VAR, "CODEX_AGY_MODEL")
+            self.assertEqual(agy_runner.AGY_AUTH_RETRIES_ENV_VAR, "CODEX_AGY_AUTH_RETRIES")
             self.assertFalse(agy_runner.ENABLE_OUTPUT_FILE_ARGUMENT)
             self.assertFalse(
                 any(action.dest == "output_file" for action in agy_runner.make_arg_parser("test")._actions)
@@ -259,6 +285,192 @@ class AgyRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("RESOURCE_EXHAUSTED", result.stderr)
 
+    def test_run_print_stops_early_on_login_failure_after_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_agy = root / "fake_agy.py"
+            fake_agy.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import pathlib
+                    import sys
+                    import time
+
+                    args = sys.argv[1:]
+                    log_path = pathlib.Path(args[args.index("--log-file") + 1])
+                    log_path.write_text(
+                        "Created conversation 44444444-4444-4444-4444-444444444444\\n"
+                        "W0611 01:27:23.377073 log_context.go:117] auth cache warning\\n"
+                        "E0611 01:27:23.383676 log.go:398] "
+                        "error getting token source: You are not logged into Antigravity.\\n",
+                        encoding="utf-8",
+                    )
+                    time.sleep(30)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            log_path = root / "agy.log"
+
+            with (
+                patch.object(agy_runner, "AGY_EARLY_FAILURE_CHECK_SECONDS", 0.1),
+                patch.object(agy_runner, "AGY_POLL_SECONDS", 0.05),
+                patch.dict(os.environ, {"HOME": str(root)}),
+            ):
+                result = agy_runner._run_print(
+                    [str(fake_agy), "--log-file", str(log_path), "-p", "prompt"],
+                    cwd=root,
+                    env=os.environ.copy(),
+                    timeout_seconds=5,
+                    start_dt=datetime.now(),
+                    start_epoch=time.time(),
+                    prompt_text="prompt",
+                )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("W0611", result.stderr)
+        self.assertIn("E0611", result.stderr)
+        self.assertIn("not logged into Antigravity", result.stderr)
+
+    def test_log_warning_error_lines_extracts_antigravity_glog_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "agy.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "I0611 01:27:23.000000 info",
+                        "W0611 01:27:23.377073 launchmanager.go:69] warning",
+                        "E0611 01:27:23.383676 log.go:398] failure",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            text = agy_runner._log_warning_error_lines(log_path)
+
+        self.assertIn("W0611", text)
+        self.assertIn("E0611", text)
+        self.assertNotIn("I0611", text)
+
+    def test_log_login_failure_detects_error_not_logged_into_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "agy.log"
+            log_path.write_text(
+                "W0611 01:27:23.377073 launchmanager.go:69] warning\n"
+                "E0611 01:27:23.383676 log.go:398] "
+                "error getting token source: You are not logged into Antigravity.\n",
+                encoding="utf-8",
+            )
+
+            text = agy_runner._log_login_failure(log_path)
+
+        self.assertIn("E0611", text)
+        self.assertIn("not logged into Antigravity", text)
+
+    def test_log_login_failure_ignores_recovered_auth_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "agy.log"
+            log_path.write_text(
+                "E0611 01:27:23.383676 log.go:398] "
+                "error getting token source: You are not logged into Antigravity.\n"
+                "I0611 01:27:24.907829 server_oauth.go:216] "
+                "OAuth auth successfully as ixener@example.com\n"
+                "E0611 01:27:25.383676 log.go:398] "
+                "error getting token source: You are not logged into Antigravity.\n"
+                "I0611 01:27:26.310252 server.go:753] "
+                "Created conversation 11111111-1111-1111-1111-111111111111\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(agy_runner._log_login_failure(log_path), "")
+            self.assertEqual(agy_runner._log_auth_failure(log_path), "")
+
+    def test_run_agy_retries_not_logged_in_log_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            logs = [root / "agy-first.log", root / "agy-second.log"]
+            calls: list[list[str]] = []
+
+            def fake_run_interactive(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                calls.append(command)
+                log_path = Path(command[command.index("--log-file") + 1])
+                if len(calls) == 1:
+                    log_path.write_text(
+                        "W0611 01:27:23.377073 launchmanager.go:69] warning\n"
+                        "E0611 01:27:23.383676 log.go:398] "
+                        "error getting token source: You are not logged into Antigravity.\n",
+                        encoding="utf-8",
+                    )
+                    return subprocess.CompletedProcess(command, 1, "", "auth failed")
+                log_path.write_text("", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, "final advisory", "")
+
+            progress = io.StringIO()
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="--log-file\n-i\n--model"),
+                patch.object(agy_runner, "_agy_log_file", side_effect=logs),
+                patch.object(agy_runner, "_run_interactive", side_effect=fake_run_interactive),
+                patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "5"}, clear=True),
+                contextlib.redirect_stderr(progress),
+            ):
+                result = agy_runner.run_agy(
+                    "prompt",
+                    10,
+                    root,
+                    mode="interactive",
+                    config_path=root / "missing-agy-config.json",
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "final advisory")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("W0611", progress.getvalue())
+        self.assertIn("E0611", progress.getvalue())
+        self.assertIn("relaunching (1/5)", progress.getvalue())
+
+    def test_run_agy_does_not_retry_recovered_auth_log_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            log_path = root / "agy.log"
+            calls: list[list[str]] = []
+
+            def fake_run_interactive(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                calls.append(command)
+                Path(command[command.index("--log-file") + 1]).write_text(
+                    "E0611 01:27:23.383676 log.go:398] "
+                    "error getting token source: You are not logged into Antigravity.\n"
+                    "I0611 01:27:24.907829 server_oauth.go:216] "
+                    "OAuth auth successfully as ixener@example.com\n"
+                    "E0611 01:27:25.383676 log.go:398] "
+                    "error getting token source: You are not logged into Antigravity.\n"
+                    "I0611 01:27:26.310252 server.go:753] "
+                    "Created conversation 11111111-1111-1111-1111-111111111111\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, "final advisory", "")
+
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="--log-file\n-i\n--model"),
+                patch.object(agy_runner, "_agy_log_file", return_value=log_path),
+                patch.object(agy_runner, "_run_interactive", side_effect=fake_run_interactive),
+                patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "5"}, clear=True),
+            ):
+                result = agy_runner.run_agy(
+                    "prompt",
+                    10,
+                    root,
+                    mode="interactive",
+                    config_path=root / "missing-agy-config.json",
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "final advisory")
+        self.assertEqual(len(calls), 1)
+
     def test_latest_model_text_reads_last_done_model_record(self) -> None:
         records = [
             {"source": "MODEL", "status": "STREAMING", "content": "draft"},
@@ -267,6 +479,46 @@ class AgyRunnerTests(unittest.TestCase):
         ]
 
         self.assertEqual(agy_runner._latest_model_text(records), "final")
+
+    def test_latest_model_text_waits_for_running_tool_records(self) -> None:
+        records = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "status": "DONE", "content": "prompt"},
+            {"step_index": 1, "source": "MODEL", "type": "RUN_COMMAND", "status": "RUNNING"},
+            {
+                "step_index": 2,
+                "source": "MODEL",
+                "status": "DONE",
+                "content": "I am waiting for the unit test task to complete.",
+            },
+        ]
+
+        self.assertEqual(agy_runner._latest_model_text(records), "")
+
+    def test_latest_model_text_accepts_final_after_running_tool_finishes(self) -> None:
+        records = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "status": "DONE", "content": "prompt"},
+            {"step_index": 1, "source": "MODEL", "type": "RUN_COMMAND", "status": "RUNNING"},
+            {"step_index": 1, "source": "MODEL", "type": "RUN_COMMAND", "status": "DONE"},
+            {"step_index": 2, "source": "MODEL", "status": "DONE", "content": "final review"},
+        ]
+
+        self.assertEqual(agy_runner._latest_model_text(records), "final review")
+
+    def test_latest_model_text_accepts_final_after_background_task_system_message(self) -> None:
+        records = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "status": "DONE", "content": "prompt"},
+            {"step_index": 16, "source": "MODEL", "type": "RUN_COMMAND", "status": "RUNNING"},
+            {
+                "step_index": 19,
+                "source": "SYSTEM",
+                "type": "SYSTEM_MESSAGE",
+                "status": "DONE",
+                "content": 'Task id "conversation/task-16" finished with result: OK',
+            },
+            {"step_index": 20, "source": "MODEL", "status": "DONE", "content": "final review"},
+        ]
+
+        self.assertEqual(agy_runner._latest_model_text(records), "final review")
 
     def test_latest_run_model_text_ignores_tool_planner_records(self) -> None:
         start_epoch = datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc).timestamp()
@@ -708,6 +960,18 @@ class AgyRunnerTests(unittest.TestCase):
 
             log_path.write_text(
                 "agent executor error: RESOURCE_EXHAUSTED: Individual quota reached",
+                encoding="utf-8",
+            )
+            self.assertIn("RESOURCE_EXHAUSTED", agy_runner._log_terminal_failure(log_path))
+
+            log_path.write_text(
+                "<USER_REQUEST>\nPlease review code handling RESOURCE_EXHAUSTED errors.\n</USER_REQUEST>",
+                encoding="utf-8",
+            )
+            self.assertEqual(agy_runner._log_terminal_failure(log_path), "")
+
+            log_path.write_text(
+                "E0611 01:27:23.383676 log.go:398] RESOURCE_EXHAUSTED: Individual quota reached",
                 encoding="utf-8",
             )
             self.assertIn("RESOURCE_EXHAUSTED", agy_runner._log_terminal_failure(log_path))

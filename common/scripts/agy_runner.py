@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - platform dependent
 
 DEFAULT_TIMEOUT_SECONDS = 1200
 DEFAULT_AGY_MODEL = "Gemini 3.5 Flash (High)"
+DEFAULT_AGY_AUTH_RETRIES = 5
 SUPPORTED_AGY_MODELS = (
     "Gemini 3.5 Flash (High)",
     "Gemini 3.1 Pro (High)",
@@ -40,9 +41,12 @@ SUPPORTED_AGY_MODELS = (
 )
 MAX_OUTPUT_CHARS = 12000
 MAX_PROGRESS_TEXT_CHARS = 500
+MAX_LOG_WARNING_ERROR_LINES = 80
+MAX_AUTH_RETRY_LOG_LINES = 20
 DEFAULT_AGY_CMD = "agy"
 AGY_POLL_SECONDS = 1.0
 AGY_SHUTDOWN_GRACE_SECONDS = 3.0
+AGY_EARLY_FAILURE_CHECK_SECONDS = 5.0
 TURN_START_SKEW_SECONDS = 300.0
 TRANSCRIPT_MTIME_SKEW_SECONDS = 2.0
 AGY_WAIT_PROGRESS_PREFIX = "[Antigravity wait]"
@@ -62,6 +66,16 @@ AUTH_FAILURE_MARKERS = (
     "authentication required",
     "authentication timed out",
 )
+AUTH_SUCCESS_MARKERS = (
+    "auth succeeded",
+    "oauth auth successfully",
+    "auth done received",
+    "created conversation",
+    "streaming conversation",
+    "forwarding user message to conversation",
+    "sending user message to conversation",
+    "https://daily-cloudcode-pa.googleapis.com",
+)
 TERMINAL_LOG_FAILURE_MARKERS = (
     "auth timed out",
     "authentication timed out",
@@ -72,6 +86,9 @@ TERMINAL_LOG_FAILURE_MARKERS = (
     "user location is not supported",
     "failed_precondition",
 )
+WARNING_ERROR_LOG_PATTERN = re.compile(r"^\s*[WE]\d{4}\b")
+ERROR_LOG_PATTERN = re.compile(r"^\s*E\d{4}\b")
+TASK_FINISHED_PATTERN = re.compile(r'Task id "[^"]+/task-(\d+)" finished')
 _PROGRESS_STREAM = None
 
 
@@ -110,6 +127,7 @@ AGY_MODE_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_MODE"
 AGY_CONFIG_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_CONFIG"
 AGY_MODEL_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_MODEL"
 AGY_PRINT_TIMEOUT_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_PRINT_TIMEOUT"
+AGY_AUTH_RETRIES_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_AUTH_RETRIES"
 AGY_DANGEROUS_SKIP_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
 ENABLE_OUTPUT_FILE_ARGUMENT = _PLATFORM.enable_output_file
 
@@ -119,7 +137,8 @@ def configure_platform(config: AgyPlatformConfig) -> None:
     global _PLATFORM
     global DEFAULT_MODE, DEFAULT_CONFIG_PATH, AGY_HOME_ENV_VAR
     global AGY_CMD_ENV_VAR, AGY_MODE_ENV_VAR, AGY_CONFIG_ENV_VAR, AGY_MODEL_ENV_VAR
-    global AGY_PRINT_TIMEOUT_ENV_VAR, AGY_DANGEROUS_SKIP_ENV_VAR, ENABLE_OUTPUT_FILE_ARGUMENT
+    global AGY_PRINT_TIMEOUT_ENV_VAR, AGY_AUTH_RETRIES_ENV_VAR
+    global AGY_DANGEROUS_SKIP_ENV_VAR, ENABLE_OUTPUT_FILE_ARGUMENT
 
     _PLATFORM = config
     DEFAULT_MODE = config.default_mode
@@ -130,6 +149,7 @@ def configure_platform(config: AgyPlatformConfig) -> None:
     AGY_CONFIG_ENV_VAR = f"{config.env_prefix}_AGY_CONFIG"
     AGY_MODEL_ENV_VAR = f"{config.env_prefix}_AGY_MODEL"
     AGY_PRINT_TIMEOUT_ENV_VAR = f"{config.env_prefix}_AGY_PRINT_TIMEOUT"
+    AGY_AUTH_RETRIES_ENV_VAR = f"{config.env_prefix}_AGY_AUTH_RETRIES"
     AGY_DANGEROUS_SKIP_ENV_VAR = f"{config.env_prefix}_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
     ENABLE_OUTPUT_FILE_ARGUMENT = config.enable_output_file
 
@@ -207,6 +227,23 @@ def _config_bool(config: dict[str, Any], key: str, env_name: str, default: bool)
         if normalized in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+def _config_int(
+    config: dict[str, Any],
+    key: str,
+    env_name: str,
+    default: int,
+    *,
+    minimum: int = 0,
+) -> int:
+    raw_env = os.getenv(env_name, "").strip() if env_name else ""
+    value: object = raw_env if raw_env else config.get(key, default)
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+    return max(minimum, parsed)
 
 
 def _normalize_mode(mode: str) -> str:
@@ -428,7 +465,7 @@ def _conversation_id_from_log(log_path: Path | None) -> str:
     if not log_path or not log_path.is_file():
         return ""
     try:
-        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        lines = _read_log_lines(log_path)
     except Exception:
         return ""
     discovered: list[str] = []
@@ -440,26 +477,113 @@ def _conversation_id_from_log(log_path: Path | None) -> str:
     return discovered[0] if discovered else ""
 
 
-def _log_auth_failure(log_path: Path | None) -> str:
+def _read_log_lines(log_path: Path | None) -> list[str]:
     if not log_path or not log_path.is_file():
-        return ""
+        return []
     try:
-        text = log_path.read_text(encoding="utf-8", errors="ignore")[-MAX_OUTPUT_CHARS:]
+        return log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except Exception:
+        return []
+
+
+def _latest_marker_index(lines: list[str], markers: tuple[str, ...]) -> int:
+    latest = -1
+    for index, line in enumerate(lines):
+        normalized = line.lower()
+        if any(marker in normalized for marker in markers):
+            latest = index
+    return latest
+
+
+def _has_later_auth_success(lines: list[str], failure_index: int) -> bool:
+    success_index = _latest_marker_index(lines, AUTH_SUCCESS_MARKERS)
+    return failure_index >= 0 and success_index > failure_index
+
+
+def _log_auth_failure(log_path: Path | None) -> str:
+    lines = _read_log_lines(log_path)
+    if not lines:
         return ""
+    failure_index = _latest_marker_index(lines, AUTH_FAILURE_MARKERS)
+    if failure_index < 0 or _has_later_auth_success(lines, failure_index):
+        return ""
+    text = "\n".join(lines)[-MAX_OUTPUT_CHARS:]
     normalized = text.lower()
     return text.strip() if any(marker in normalized for marker in AUTH_FAILURE_MARKERS) else ""
 
 
+def _log_warning_error_lines(
+    log_path: Path | None,
+    *,
+    limit: int = MAX_LOG_WARNING_ERROR_LINES,
+) -> str:
+    lines = _read_log_lines(log_path)
+    if not lines:
+        return ""
+    matched = [line.strip() for line in lines if WARNING_ERROR_LOG_PATTERN.search(line)]
+    if limit > 0:
+        matched = matched[-limit:]
+    return "\n".join(matched)[-MAX_OUTPUT_CHARS:].strip()
+
+
+def _format_log_warning_error_diagnostics(log_path: Path | None) -> str:
+    log_text = _log_warning_error_lines(log_path)
+    return f"Antigravity log W/E lines:\n{log_text}" if log_text else ""
+
+
+def _log_login_failure(log_path: Path | None) -> str:
+    lines = _read_log_lines(log_path)
+    latest_login_failure = -1
+    matched: list[str] = []
+    for index, line in enumerate(lines):
+        if ERROR_LOG_PATTERN.search(line) and "not logged into antigravity" in line.lower():
+            latest_login_failure = index
+            matched.append(line.strip())
+    if matched and not _has_later_auth_success(lines, latest_login_failure):
+        return "\n".join(matched[-MAX_AUTH_RETRY_LOG_LINES:])
+    auth_text = _log_auth_failure(log_path)
+    return auth_text if "not logged into antigravity" in auth_text.lower() else ""
+
+
+def _is_login_failure_result(result: subprocess.CompletedProcess[str], log_path: Path | None) -> bool:
+    log_login_failure = _log_login_failure(log_path)
+    if log_login_failure:
+        return True
+    if _latest_marker_index(_read_log_lines(log_path), AUTH_SUCCESS_MARKERS) >= 0:
+        return False
+    diagnostics = "\n".join(
+        part
+        for part in (
+            str(result.stdout or ""),
+            str(result.stderr or ""),
+        )
+        if part
+    )
+    return "not logged into antigravity" in diagnostics.lower()
+
+
+def _emit_auth_retry_progress(log_path: Path | None, retry_index: int, retry_limit: int) -> None:
+    log_text = _log_warning_error_lines(log_path, limit=MAX_AUTH_RETRY_LOG_LINES)
+    for line in log_text.splitlines():
+        _emit_progress("[Antigravity log]", line)
+    _emit_progress(
+        "[Antigravity auth]",
+        f"not logged into Antigravity; relaunching ({retry_index}/{retry_limit})",
+    )
+
+
 def _log_terminal_failure(log_path: Path | None) -> str:
-    if not log_path or not log_path.is_file():
+    lines = _read_log_lines(log_path)
+    if not lines:
         return ""
-    try:
-        text = log_path.read_text(encoding="utf-8", errors="ignore")[-MAX_OUTPUT_CHARS:]
-    except Exception:
-        return ""
-    normalized = text.lower()
-    return text.strip() if any(marker in normalized for marker in TERMINAL_LOG_FAILURE_MARKERS) else ""
+    matched: list[str] = []
+    for line in lines:
+        normalized = line.lower()
+        if not any(marker in normalized for marker in TERMINAL_LOG_FAILURE_MARKERS):
+            continue
+        if WARNING_ERROR_LOG_PATTERN.search(line) or "agent executor error:" in normalized:
+            matched.append(line.strip())
+    return "\n".join(matched)[-MAX_OUTPUT_CHARS:].strip()
 
 
 def _transcript_path(conversation_id: str) -> Path | None:
@@ -572,6 +696,8 @@ def _turn_start_index_after(
 
 def _latest_model_text(records: list[dict[str, Any]], turn_start_index: int = 0) -> str:
     start_index = max(0, min(int(turn_start_index or 0), len(records)))
+    if _has_running_records(records[start_index:]):
+        return ""
     for record in reversed(records[start_index:]):
         if str(record.get("source", "")).strip() != "MODEL":
             continue
@@ -585,6 +711,24 @@ def _latest_model_text(records: list[dict[str, Any]], turn_start_index: int = 0)
         if text:
             return text
     return ""
+
+
+def _has_running_records(records: list[dict[str, Any]]) -> bool:
+    latest_status_by_step: dict[str, str] = {}
+    finished_background_steps: set[str] = set()
+    for record in records:
+        if (
+            str(record.get("source", "")).strip() == "SYSTEM"
+            and str(record.get("type", "")).strip() == "SYSTEM_MESSAGE"
+        ):
+            finished_background_steps.update(TASK_FINISHED_PATTERN.findall(str(record.get("content") or "")))
+        step_index = record.get("step_index")
+        if step_index is None:
+            continue
+        latest_status_by_step[str(step_index)] = str(record.get("status", "")).strip()
+    for step_index in finished_background_steps:
+        latest_status_by_step[step_index] = "DONE"
+    return any(status == "RUNNING" for status in latest_status_by_step.values())
 
 
 def _latest_run_model_text(
@@ -937,9 +1081,69 @@ def _run_print(
                         _emit_progress("[Antigravity transcript]", transcript)
                         if transcript and not _transcript_touched_for_run(transcript, start_epoch):
                             transcript_start_index = len(_load_transcript(transcript))
+                    elif time.monotonic() - start_monotonic >= AGY_EARLY_FAILURE_CHECK_SECONDS:
+                        terminal_failure_text = _log_terminal_failure(log_path)
+                        login_failure_text = _log_login_failure(log_path)
+                        if terminal_failure_text or login_failure_text:
+                            _terminate_process(process)
+                            stdout_handle.flush()
+                            stderr_handle.flush()
+                            stdout_text = _read_text_file(stdout_path)
+                            stderr_text = _read_text_file(stderr_path)
+                            log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
+                            return subprocess.CompletedProcess(
+                                args,
+                                1,
+                                "",
+                                "\n".join(
+                                    part
+                                    for part in (
+                                        stdout_text.strip(),
+                                        stderr_text.strip(),
+                                        terminal_failure_text.strip(),
+                                        login_failure_text.strip(),
+                                        log_warning_error_text,
+                                    )
+                                    if part
+                                ),
+                            )
                 if transcript and _transcript_touched_for_run(transcript, start_epoch):
                     records = _load_transcript(transcript)
                     seen_steps = _emit_transcript_progress(records, seen_steps)
+                if transcript and time.monotonic() - start_monotonic >= AGY_EARLY_FAILURE_CHECK_SECONDS:
+                    latest_transcript_text = _latest_run_model_text(
+                        records,
+                        prompt_text,
+                        start_epoch,
+                        _path_mtime_epoch(transcript),
+                        transcript_start_index,
+                    )
+                    if not latest_transcript_text:
+                        terminal_failure_text = _log_terminal_failure(log_path)
+                        login_failure_text = _log_login_failure(log_path)
+                        if terminal_failure_text or login_failure_text:
+                            _terminate_process(process)
+                            stdout_handle.flush()
+                            stderr_handle.flush()
+                            stdout_text = _read_text_file(stdout_path)
+                            stderr_text = _read_text_file(stderr_path)
+                            log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
+                            return subprocess.CompletedProcess(
+                                args,
+                                1,
+                                "",
+                                "\n".join(
+                                    part
+                                    for part in (
+                                        stdout_text.strip(),
+                                        stderr_text.strip(),
+                                        terminal_failure_text.strip(),
+                                        login_failure_text.strip(),
+                                        log_warning_error_text,
+                                    )
+                                    if part
+                                ),
+                            )
                 last_wait_percent = _emit_wait_progress(
                     time.monotonic(), start_monotonic, timeout_seconds, last_wait_percent
                 )
@@ -949,11 +1153,21 @@ def _run_print(
                     stderr_handle.flush()
                     stdout_text = _read_text_file(stdout_path)
                     stderr_text = _read_text_file(stderr_path)
+                    timeout_diagnostics = "\n".join(
+                        part
+                        for part in (
+                            stderr_text,
+                            _log_terminal_failure(log_path),
+                            _log_login_failure(log_path),
+                            _format_log_warning_error_diagnostics(log_path),
+                        )
+                        if part
+                    )
                     raise subprocess.TimeoutExpired(
                         args,
                         timeout_seconds,
                         output=stdout_text,
-                        stderr=stderr_text,
+                        stderr=timeout_diagnostics,
                     )
                 time.sleep(AGY_POLL_SECONDS)
             returncode = process.wait()
@@ -981,8 +1195,16 @@ def _run_print(
         )
         terminal_failure_text = _log_terminal_failure(log_path)
         auth_failure_text = _log_auth_failure(log_path) if not conversation_id else ""
+        log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
         combined_diagnostics = "\n".join(
-            part for part in (stdout_text, stderr_text, terminal_failure_text, auth_failure_text) if part
+            part
+            for part in (
+                stdout_text,
+                stderr_text,
+                terminal_failure_text,
+                auth_failure_text,
+            )
+            if part
         )
         effective_returncode = returncode or (
             1 if terminal_failure_text or _is_auth_failure(combined_diagnostics, conversation_id, records) else 0
@@ -995,7 +1217,14 @@ def _run_print(
             or auth_failure_text.strip()
         )
         stderr = "\n".join(
-            part for part in (stderr_text.strip(), terminal_failure_text.strip(), auth_failure_text.strip()) if part
+            part
+            for part in (
+                stderr_text.strip(),
+                terminal_failure_text.strip(),
+                auth_failure_text.strip(),
+                log_warning_error_text,
+            )
+            if part
         )
         return subprocess.CompletedProcess(args, effective_returncode, text, stderr)
     finally:
@@ -1055,16 +1284,27 @@ def _run_interactive(
                     _emit_progress("[Antigravity transcript]", transcript)
                     if transcript and not _transcript_touched_for_run(transcript, start_epoch):
                         transcript_start_index = len(_load_transcript(transcript))
-                elif time.monotonic() - start_monotonic >= 5:
+                elif time.monotonic() - start_monotonic >= AGY_EARLY_FAILURE_CHECK_SECONDS:
                     terminal_failure_text = _log_terminal_failure(log_path)
-                    if terminal_failure_text:
+                    login_failure_text = _log_login_failure(log_path)
+                    if terminal_failure_text or login_failure_text:
                         _close_interactive(process, master_fd)
                         interactive_closed = True
+                        log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
                         return subprocess.CompletedProcess(
                             args,
                             1,
                             "",
-                            "\n".join(part for part in (captured_output.strip(), terminal_failure_text) if part),
+                            "\n".join(
+                                part
+                                for part in (
+                                    captured_output.strip(),
+                                    terminal_failure_text,
+                                    login_failure_text,
+                                    log_warning_error_text,
+                                )
+                                if part
+                            ),
                         )
 
             if transcript:
@@ -1087,14 +1327,25 @@ def _run_interactive(
                         _emit_progress("[Antigravity exit]", "requested /quit after transcript output")
                 elif not latest_text:
                     terminal_failure_text = _log_terminal_failure(log_path)
-                    if terminal_failure_text:
+                    login_failure_text = _log_login_failure(log_path)
+                    if terminal_failure_text or login_failure_text:
                         _close_interactive(process, master_fd)
                         interactive_closed = True
+                        log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
                         return subprocess.CompletedProcess(
                             args,
                             1,
                             "",
-                            "\n".join(part for part in (captured_output.strip(), terminal_failure_text) if part),
+                            "\n".join(
+                                part
+                                for part in (
+                                    captured_output.strip(),
+                                    terminal_failure_text,
+                                    login_failure_text,
+                                    log_warning_error_text,
+                                )
+                                if part
+                            ),
                         )
 
             if process.poll() is not None:
@@ -1119,9 +1370,32 @@ def _run_interactive(
 
                 returncode = process.returncode or 0
                 terminal_failure_text = _log_terminal_failure(log_path)
-                diagnostics = "\n".join(part for part in (captured_output.strip(), terminal_failure_text) if part)
+                login_failure_text = _log_login_failure(log_path) if not conversation_id else ""
+                log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
+                classification_diagnostics = "\n".join(
+                    part
+                    for part in (
+                        captured_output.strip(),
+                        terminal_failure_text,
+                        login_failure_text,
+                    )
+                    if part
+                )
+                diagnostics = "\n".join(
+                    part
+                    for part in (
+                        captured_output.strip(),
+                        terminal_failure_text,
+                        login_failure_text,
+                        log_warning_error_text,
+                    )
+                    if part
+                )
                 effective_returncode = returncode or (
-                    1 if terminal_failure_text or _is_auth_failure(diagnostics, conversation_id, records) else 0
+                    1
+                    if terminal_failure_text
+                    or _is_auth_failure(classification_diagnostics, conversation_id, records)
+                    else 0
                 )
                 text = latest_text or captured_output.strip()
                 _close_interactive(process, master_fd)
@@ -1139,7 +1413,16 @@ def _run_interactive(
                     args,
                     timeout_seconds,
                     output=captured_output,
-                    stderr=latest_text,
+                    stderr="\n".join(
+                        part
+                        for part in (
+                            latest_text,
+                            _log_terminal_failure(log_path),
+                            _log_login_failure(log_path),
+                            _format_log_warning_error_diagnostics(log_path),
+                        )
+                        if part
+                    ),
                 )
             time.sleep(AGY_POLL_SECONDS)
     except BaseException:
@@ -1170,6 +1453,12 @@ def run_agy(
     dangerously_skip_permissions = _config_bool(
         config, "dangerously_skip_permissions", AGY_DANGEROUS_SKIP_ENV_VAR, True
     )
+    auth_retries = _config_int(
+        config,
+        "auth_retries",
+        AGY_AUTH_RETRIES_ENV_VAR,
+        DEFAULT_AGY_AUTH_RETRIES,
+    )
 
     base_args, env_overrides = _base_command(config=config)
     resolved_exe = _resolve_executable(base_args[0])
@@ -1184,56 +1473,74 @@ def run_agy(
     base_args[0] = resolved_exe
 
     help_text = _probe_help(base_args, project_root, env_overrides)
-    start_dt = datetime.now()
-    start_epoch = time.time()
-    log_file = str(_agy_log_file(start_dt))
     print_timeout = _config_text(
         config, "print_timeout", AGY_PRINT_TIMEOUT_ENV_VAR, _duration_text(timeout_seconds)
     )
-    command = _build_command(
-        base_args,
-        help_text=help_text,
-        prompt=prompt_text,
-        print_timeout=print_timeout,
-        log_file=log_file,
-        model=model,
-        add_dirs=add_dirs,
-        mode=selected_mode,
-        dangerously_skip_permissions=dangerously_skip_permissions,
-    )
+    env = _agy_environment(env_overrides)
+    last_result: subprocess.CompletedProcess[str] | None = None
 
-    if selected_mode == "print":
-        result = _run_print(
-            command,
-            cwd=project_root,
-            env=_agy_environment(env_overrides),
-            timeout_seconds=timeout_seconds,
-            start_dt=start_dt,
-            start_epoch=start_epoch,
-            prompt_text=prompt_text,
+    for attempt_index in range(auth_retries + 1):
+        start_dt = datetime.now()
+        start_epoch = time.time()
+        log_path = _agy_log_file(start_dt)
+        command = _build_command(
+            base_args,
+            help_text=help_text,
+            prompt=prompt_text,
+            print_timeout=print_timeout,
+            log_file=str(log_path),
+            model=model,
+            add_dirs=add_dirs,
+            mode=selected_mode,
+            dangerously_skip_permissions=dangerously_skip_permissions,
         )
-    else:
-        result = _run_interactive(
-            command,
-            cwd=project_root,
-            env=_agy_environment(env_overrides),
-            timeout_seconds=timeout_seconds,
-            start_dt=start_dt,
-            start_epoch=start_epoch,
-            prompt_text=prompt_text,
-        )
-    if result.returncode == 0:
-        normalized_stdout = (
-            output_normalizer(result.stdout)
-            if output_normalizer
-            else result.stdout.strip()
-        )
-        validation_error = output_validator(normalized_stdout) if output_validator else ""
-        if validation_error:
-            return subprocess.CompletedProcess(command, 1, "", validation_error.replace("Gemini", "Antigravity"))
-        if normalized_stdout:
-            return subprocess.CompletedProcess(command, 0, normalized_stdout, result.stderr)
-    return result
+
+        if selected_mode == "print":
+            result = _run_print(
+                command,
+                cwd=project_root,
+                env=env,
+                timeout_seconds=timeout_seconds,
+                start_dt=start_dt,
+                start_epoch=start_epoch,
+                prompt_text=prompt_text,
+            )
+        else:
+            result = _run_interactive(
+                command,
+                cwd=project_root,
+                env=env,
+                timeout_seconds=timeout_seconds,
+                start_dt=start_dt,
+                start_epoch=start_epoch,
+                prompt_text=prompt_text,
+            )
+        last_result = result
+
+        if _is_login_failure_result(result, log_path) and attempt_index < auth_retries:
+            _emit_auth_retry_progress(log_path, attempt_index + 1, auth_retries)
+            continue
+
+        if result.returncode == 0:
+            normalized_stdout = (
+                output_normalizer(result.stdout)
+                if output_normalizer
+                else result.stdout.strip()
+            )
+            validation_error = output_validator(normalized_stdout) if output_validator else ""
+            if validation_error:
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    "",
+                    validation_error.replace("Gemini", "Antigravity"),
+                )
+            if normalized_stdout:
+                return subprocess.CompletedProcess(command, 0, normalized_stdout, result.stderr)
+        return result
+
+    assert last_result is not None
+    return last_result
 
 
 def make_arg_parser(description: str) -> argparse.ArgumentParser:

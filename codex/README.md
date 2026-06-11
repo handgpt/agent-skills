@@ -52,6 +52,8 @@ The wrappers pass local file and directory paths to the external reviewer so it 
 
 The Antigravity runner launches from the same single-project or multi-project workspace root. By default it uses interactive prompt mode, `agy -i "<prompt>"`; set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. In both modes it sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
 
+If the Antigravity CLI log reports `E... You are not logged into Antigravity`, the runner treats that as a transient login failure, prints matching `W...` and `E...` log lines, and relaunches `agy` up to 5 times by default.
+
 Use `~/.codex/agy_cli.json` to switch modes or models without editing skill code:
 
 ```json
@@ -60,11 +62,12 @@ Use `~/.codex/agy_cli.json` to switch modes or models without editing skill code
   "command": "agy",
   "model": "Gemini 3.5 Flash (High)",
   "print_timeout": "1200s",
+  "auth_retries": 5,
   "dangerously_skip_permissions": true
 }
 ```
 
-If `agy` is not on `PATH`, set `"command": "~/.local/bin/agy"` or export `CODEX_AGY_CMD=~/.local/bin/agy`. Environment variables override the config file: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`, `CODEX_AGY_MODEL`, `CODEX_AGY_PRINT_TIMEOUT`, and `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`.
+If `agy` is not on `PATH`, set `"command": "~/.local/bin/agy"` or export `CODEX_AGY_CMD=~/.local/bin/agy`. Environment variables override the config file: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`, `CODEX_AGY_MODEL`, `CODEX_AGY_PRINT_TIMEOUT`, `CODEX_AGY_AUTH_RETRIES`, and `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`.
 
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. The external reviewer runs from the selected workspace root and may inspect other workspace-local files when the brief requires it.
 

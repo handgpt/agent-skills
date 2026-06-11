@@ -99,6 +99,7 @@ All configuration is optional. The defaults work out of the box.
 | `CLAUDE_AGY_CONFIG` | `~/.claude/agy_cli.json` | Optional Antigravity CLI config JSON path |
 | `CLAUDE_AGY_MODEL` | `Gemini 3.5 Flash (High)` | Antigravity model passed through `--model` when supported. Supported: `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, `Claude Opus 4.6 (Thinking)` |
 | `CLAUDE_AGY_PRINT_TIMEOUT` | `1200s` | Antigravity print-mode timeout passed to `agy` when supported |
+| `CLAUDE_AGY_AUTH_RETRIES` | `5` | Relaunch count for transient `E... not logged into Antigravity` CLI log failures |
 | `CLAUDE_AGY_DANGEROUSLY_SKIP_PERMISSIONS` | `true` | Auto-approve Antigravity CLI tool permissions when supported |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
@@ -174,7 +175,8 @@ that locate those common runners.
 - **Advisory only.** External agents never edit files. They provide findings
   that Claude Code evaluates and acts on.
 - **Bounded.** Each advisory pass runs once per change set, failure cluster, or
-  decision point. No retry loops.
+  decision point. Only transient Antigravity login-state failures use a bounded
+  relaunch loop.
 - **Workspace-scoped.** Agents only inspect files inside the current workspace.
   Out-of-workspace paths are ignored.
 - **Read-only sandbox.** Codex CLI skills run in read-only sandbox mode.
@@ -185,7 +187,9 @@ that locate those common runners.
   to `agy -p`, can switch to `agy -i` with `CLAUDE_AGY_MODE=interactive` or
   `"mode": "interactive"` in `~/.claude/agy_cli.json`, pass
   `--model "Gemini 3.5 Flash (High)"` by default when supported, and pass
-  extra multi-project roots through repeatable `--add-dir` flags.
+  extra multi-project roots through repeatable `--add-dir` flags. Transient
+  `E... not logged into Antigravity` failures are relaunched up to 5 times by
+  default, with matching `W...` and `E...` log lines printed for diagnosis.
 
 ## Differences from Codex Version
 
