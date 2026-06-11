@@ -7,9 +7,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-_SHARED_SCRIPTS = str(Path(__file__).resolve().parents[2] / "shared" / "scripts")
-if _SHARED_SCRIPTS not in sys.path:
-    sys.path.insert(0, _SHARED_SCRIPTS)
+def _common_scripts_dir() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        candidate = parent / "common" / "scripts"
+        if (candidate / "codex_runner.py").is_file():
+            return candidate
+    raise RuntimeError("Could not locate common Codex runner scripts.")
+
+
+_COMMON_SCRIPTS = str(_common_scripts_dir())
+if _COMMON_SCRIPTS not in sys.path:
+    sys.path.insert(0, _COMMON_SCRIPTS)
 
 import codex_runner  # noqa: E402
 

@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""Run a bounded Gemini CLI design checkpoint and print advisory output."""
+"""Run a bounded Antigravity CLI design checkpoint and print advisory output."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-def _common_scripts_dir() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent / "common" / "scripts"
-        if (candidate / "gemini_runner.py").is_file():
-            return candidate
-    raise RuntimeError("Could not locate common Gemini runner scripts.")
-
-
-_COMMON_SCRIPTS = str(_common_scripts_dir())
+_COMMON_SCRIPTS = str(Path(__file__).resolve().parents[1])
 if _COMMON_SCRIPTS not in sys.path:
     sys.path.insert(0, _COMMON_SCRIPTS)
 
-import gemini_runner  # noqa: E402
+import agy_runner  # noqa: E402
+
 
 ROLE_LINE = "You are an external architecture reviewer giving a second opinion to another coding agent."
 
@@ -45,15 +37,8 @@ One short paragraph.
 ## Recommendation
 - bullet
 
-## Sources & Verification
-For every best-practice claim or recommendation above, list:
-- The practice or claim
-- Source: official doc URL, community reference, or "unverified (training knowledge only)"
-- Whether the source is official guidance or community convention
-If no verification was possible for a claim, explicitly mark it as unverified.
-
 Rules:
-- You are running via Gemini CLI on the same machine as the local project files.
+- You are running via Antigravity CLI on the same machine as the local project files.
 - The current workspace root is listed below. Review only files and directories inside that workspace root.
 - Read the inlined brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
@@ -61,7 +46,6 @@ Rules:
 - If prior project-thread context conflicts with the current brief or local paths, treat the current brief and local paths as the source of truth.
 - Explicitly judge whether the preferred direction follows current best practices; if it deviates, say whether the deviation is justified.
 - Treat a deviation from default best practice as justified only when the stated constraints or operating model clearly outweigh the normal best-practice tradeoffs.
-- For EVERY best-practice claim you make, verify it against official documentation or community sources. Do not rely solely on training knowledge. If you cannot verify, explicitly state "unverified".
 - Check both the overall architecture and the module-level design. A design is not "best practice" if individual modules look fine but the overall composition, boundaries, or ownership model are poor.
 - When the topic depends on external frameworks, APIs, infrastructure, or standards, consult official documentation and community experience before concluding.
 - Seek disconfirming evidence, not just supporting evidence, from official docs and community practice before endorsing the preferred direction.
@@ -72,7 +56,6 @@ Rules:
 - Call out any mismatch between the stated plan and the referenced local paths.
 - Be concise and critical.
 - Provide advice only. Do not propose editing files or applying patches.
-- The "## Sources & Verification" section is MANDATORY. Every recommendation in Verdict, Best-Practice Alignment, and Recommendation sections must have a corresponding entry in Sources & Verification.
 - Prefer to start with `## Verdict`, but if the formatting drifts slightly, still return a concise on-task advisory instead of meta commentary.
 - Avoid preambles, tool notes, and self-commentary before the main advisory content.
 - Do not narrate your inspection process, say that you are reviewing or inspecting files, or describe a plan you are about to execute.
@@ -80,12 +63,12 @@ Rules:
 - If a section has nothing important, write "- none".
 - Do not repeat the brief back verbatim.
 - If evidence from official docs or community practice is weak or conflicting, say so explicitly.
-- Do not exceed 400 words unless the brief is unusually complex."""
+- Do not exceed 300 words unless the brief is unusually complex."""
 
 
 def main() -> int:
-    return gemini_runner.run_advisory(
-        description="Run a bounded Gemini CLI design checkpoint and print advisory output.",
+    return agy_runner.run_advisory(
+        description="Run a bounded Antigravity CLI design checkpoint and print advisory output.",
         role_line=ROLE_LINE,
         output_contract=OUTPUT_CONTRACT,
         label="design checkpoint",

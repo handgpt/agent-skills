@@ -1,0 +1,1 @@
+"""Common Antigravity advisory entrypoints."""

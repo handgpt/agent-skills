@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
-"""Run a bounded Gemini CLI review pass and print advisory output."""
+"""Run a bounded Antigravity CLI review pass and print advisory output."""
 from __future__ import annotations
 
 import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
-def _common_scripts_dir() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent / "common" / "scripts"
-        if (candidate / "gemini_runner.py").is_file():
-            return candidate
-    raise RuntimeError("Could not locate common Gemini runner scripts.")
-
-
-_COMMON_SCRIPTS = str(_common_scripts_dir())
+_COMMON_SCRIPTS = str(Path(__file__).resolve().parents[1])
 if _COMMON_SCRIPTS not in sys.path:
     sys.path.insert(0, _COMMON_SCRIPTS)
 
-import gemini_runner  # noqa: E402
+import agy_runner  # noqa: E402
+
 
 ROLE_LINE = "You are an external code reviewer giving a second opinion to another coding agent."
 
@@ -41,7 +33,7 @@ STANDARD_OUTPUT_CONTRACT = """Return concise Markdown. Prefer these sections whe
 One short paragraph.
 
 Rules:
-- You are running via Gemini CLI on the same machine as the local project files.
+- You are running via Antigravity CLI on the same machine as the local project files.
 - The current workspace root is listed below. Review only files and directories inside that workspace root.
 - Read the inlined review brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
@@ -82,7 +74,7 @@ STRUCTURAL_OUTPUT_CONTRACT = """Return concise Markdown. Prefer these sections w
 One short paragraph.
 
 Rules:
-- You are running via Gemini CLI on the same machine as the local project files.
+- You are running via Antigravity CLI on the same machine as the local project files.
 - The current workspace root is listed below. Review only files and directories inside that workspace root.
 - Read the inlined review brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
@@ -118,8 +110,8 @@ def build_output_contract(args: Namespace) -> str:
 
 
 def main() -> int:
-    return gemini_runner.run_advisory(
-        description="Run a bounded Gemini CLI review pass and print advisory output.",
+    return agy_runner.run_advisory(
+        description="Run a bounded Antigravity CLI review pass and print advisory output.",
         role_line=ROLE_LINE,
         label="review",
         lane="review",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared advisory prompt, path, and output helpers for Codex skills."""
+"""Shared advisory prompt, path, and output helpers for agent skills."""
 from __future__ import annotations
 
 import json

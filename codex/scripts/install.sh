@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILLS_SRC="${REPO_ROOT}/skills"
+COMMON_SRC="$(cd "${REPO_ROOT}/.." && pwd)/common"
 TEMPLATE_SRC="${REPO_ROOT}/templates/home-AGENTS.snippet.md"
 CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
 SKILLS_DEST="${CODEX_HOME_DIR}/skills"
@@ -37,6 +38,10 @@ mkdir -p "${SKILLS_DEST}"
 for legacy_skill in "${LEGACY_GEMINI_SKILLS[@]}"; do
   rm -rf "${SKILLS_DEST}/${legacy_skill}"
 done
+
+rm -rf "${SKILLS_DEST}/shared"
+mkdir -p "${SKILLS_DEST}/shared"
+cp -R "${COMMON_SRC}/scripts" "${SKILLS_DEST}/shared/scripts"
 
 for skill_dir in "${SKILLS_SRC}"/*; do
   skill_name="$(basename "${skill_dir}")"

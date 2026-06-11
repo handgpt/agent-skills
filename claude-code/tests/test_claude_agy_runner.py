@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SHARED_SCRIPTS = ROOT / "skills" / "shared" / "scripts"
+SHARED_SCRIPTS = ROOT.parent / "common" / "scripts"
 
 
 def _load_runner_module() -> object:
@@ -37,6 +37,7 @@ def _load_runner_module() -> object:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        module.configure_platform(module.CLAUDE_CODE_AGY_PLATFORM)
         return module
     finally:
         sys.path[:] = previous_path

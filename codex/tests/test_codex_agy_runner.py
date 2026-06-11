@@ -16,7 +16,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SHARED_SCRIPTS = ROOT / "skills" / "shared" / "scripts"
+SHARED_SCRIPTS = ROOT.parent / "common" / "scripts"
 
 
 def _load_runner_module() -> tuple[object, object]:
@@ -37,6 +37,7 @@ def _load_runner_module() -> tuple[object, object]:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        module.configure_platform(module.CODEX_AGY_PLATFORM)
         advisory_module = sys.modules["advisory_common"]
         return module, advisory_module
     finally:
@@ -181,6 +182,30 @@ class AgyRunnerTests(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_AGY_MODEL": "Gemini 3.5 Flash (Low)"}):
             with self.assertRaisesRegex(ValueError, "Unsupported Antigravity model"):
                 agy_runner._configured_agy_model({})
+
+    def test_configure_platform_refreshes_derived_globals(self) -> None:
+        try:
+            agy_runner.configure_platform(agy_runner.CLAUDE_CODE_AGY_PLATFORM)
+            self.assertEqual(agy_runner.DEFAULT_MODE, "print")
+            self.assertEqual(agy_runner.DEFAULT_CONFIG_PATH, "~/.claude/agy_cli.json")
+            self.assertEqual(agy_runner.AGY_CMD_ENV_VAR, "CLAUDE_AGY_CMD")
+            self.assertEqual(agy_runner.AGY_MODEL_ENV_VAR, "CLAUDE_AGY_MODEL")
+            self.assertTrue(agy_runner.ENABLE_OUTPUT_FILE_ARGUMENT)
+            self.assertTrue(
+                any(action.dest == "output_file" for action in agy_runner.make_arg_parser("test")._actions)
+            )
+
+            agy_runner.configure_platform(agy_runner.CODEX_AGY_PLATFORM)
+            self.assertEqual(agy_runner.DEFAULT_MODE, "interactive")
+            self.assertEqual(agy_runner.DEFAULT_CONFIG_PATH, "~/.codex/agy_cli.json")
+            self.assertEqual(agy_runner.AGY_CMD_ENV_VAR, "CODEX_AGY_CMD")
+            self.assertEqual(agy_runner.AGY_MODEL_ENV_VAR, "CODEX_AGY_MODEL")
+            self.assertFalse(agy_runner.ENABLE_OUTPUT_FILE_ARGUMENT)
+            self.assertFalse(
+                any(action.dest == "output_file" for action in agy_runner.make_arg_parser("test")._actions)
+            )
+        finally:
+            agy_runner.configure_platform(agy_runner.CODEX_AGY_PLATFORM)
 
     def test_project_add_dirs_excludes_primary_root_and_missing_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

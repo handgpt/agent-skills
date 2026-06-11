@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared Antigravity CLI advisory runner used by Codex Antigravity skills."""
+"""Shared Antigravity CLI advisory runner used by agent advisory skills."""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +17,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,8 +31,6 @@ except ImportError:  # pragma: no cover - platform dependent
 
 
 DEFAULT_TIMEOUT_SECONDS = 1200
-DEFAULT_MODE = "interactive"
-DEFAULT_CONFIG_PATH = "~/.codex/agy_cli.json"
 DEFAULT_AGY_MODEL = "Gemini 3.5 Flash (High)"
 SUPPORTED_AGY_MODELS = (
     "Gemini 3.5 Flash (High)",
@@ -42,12 +41,6 @@ SUPPORTED_AGY_MODELS = (
 MAX_OUTPUT_CHARS = 12000
 MAX_PROGRESS_TEXT_CHARS = 500
 DEFAULT_AGY_CMD = "agy"
-AGY_CMD_ENV_VAR = "CODEX_AGY_CMD"
-AGY_MODE_ENV_VAR = "CODEX_AGY_MODE"
-AGY_CONFIG_ENV_VAR = "CODEX_AGY_CONFIG"
-AGY_MODEL_ENV_VAR = "CODEX_AGY_MODEL"
-AGY_PRINT_TIMEOUT_ENV_VAR = "CODEX_AGY_PRINT_TIMEOUT"
-AGY_DANGEROUS_SKIP_ENV_VAR = "CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
 AGY_POLL_SECONDS = 1.0
 AGY_SHUTDOWN_GRACE_SECONDS = 3.0
 TURN_START_SKEW_SECONDS = 300.0
@@ -80,6 +73,65 @@ TERMINAL_LOG_FAILURE_MARKERS = (
     "failed_precondition",
 )
 _PROGRESS_STREAM = None
+
+
+@dataclass(frozen=True)
+class AgyPlatformConfig:
+    name: str
+    env_prefix: str
+    home_env_var: str
+    default_mode: str
+    default_config_path: str
+    enable_output_file: bool = False
+
+
+CODEX_AGY_PLATFORM = AgyPlatformConfig(
+    name="Codex",
+    env_prefix="CODEX",
+    home_env_var="CODEX_HOME",
+    default_mode="interactive",
+    default_config_path="~/.codex/agy_cli.json",
+)
+CLAUDE_CODE_AGY_PLATFORM = AgyPlatformConfig(
+    name="Claude Code",
+    env_prefix="CLAUDE",
+    home_env_var="CLAUDE_HOME",
+    default_mode="print",
+    default_config_path="~/.claude/agy_cli.json",
+    enable_output_file=True,
+)
+
+_PLATFORM = CODEX_AGY_PLATFORM
+DEFAULT_MODE = _PLATFORM.default_mode
+DEFAULT_CONFIG_PATH = _PLATFORM.default_config_path
+AGY_HOME_ENV_VAR = _PLATFORM.home_env_var
+AGY_CMD_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_CMD"
+AGY_MODE_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_MODE"
+AGY_CONFIG_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_CONFIG"
+AGY_MODEL_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_MODEL"
+AGY_PRINT_TIMEOUT_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_PRINT_TIMEOUT"
+AGY_DANGEROUS_SKIP_ENV_VAR = f"{_PLATFORM.env_prefix}_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
+ENABLE_OUTPUT_FILE_ARGUMENT = _PLATFORM.enable_output_file
+
+
+def configure_platform(config: AgyPlatformConfig) -> None:
+    """Configure platform-specific defaults for the current runner process."""
+    global _PLATFORM
+    global DEFAULT_MODE, DEFAULT_CONFIG_PATH, AGY_HOME_ENV_VAR
+    global AGY_CMD_ENV_VAR, AGY_MODE_ENV_VAR, AGY_CONFIG_ENV_VAR, AGY_MODEL_ENV_VAR
+    global AGY_PRINT_TIMEOUT_ENV_VAR, AGY_DANGEROUS_SKIP_ENV_VAR, ENABLE_OUTPUT_FILE_ARGUMENT
+
+    _PLATFORM = config
+    DEFAULT_MODE = config.default_mode
+    DEFAULT_CONFIG_PATH = config.default_config_path
+    AGY_HOME_ENV_VAR = config.home_env_var
+    AGY_CMD_ENV_VAR = f"{config.env_prefix}_AGY_CMD"
+    AGY_MODE_ENV_VAR = f"{config.env_prefix}_AGY_MODE"
+    AGY_CONFIG_ENV_VAR = f"{config.env_prefix}_AGY_CONFIG"
+    AGY_MODEL_ENV_VAR = f"{config.env_prefix}_AGY_MODEL"
+    AGY_PRINT_TIMEOUT_ENV_VAR = f"{config.env_prefix}_AGY_PRINT_TIMEOUT"
+    AGY_DANGEROUS_SKIP_ENV_VAR = f"{config.env_prefix}_AGY_DANGEROUSLY_SKIP_PERMISSIONS"
+    ENABLE_OUTPUT_FILE_ARGUMENT = config.enable_output_file
 
 
 def _emit_progress(prefix: str, message: object) -> None:
@@ -115,8 +167,8 @@ def _duration_text(timeout_seconds: int) -> str:
 def _config_path(config_path: str | Path | None = None) -> Path:
     raw = str(config_path or os.getenv(AGY_CONFIG_ENV_VAR, "")).strip()
     if not raw:
-        codex_home = os.getenv("CODEX_HOME", "").strip()
-        raw = str(Path(codex_home) / "agy_cli.json") if codex_home else DEFAULT_CONFIG_PATH
+        platform_home = os.getenv(AGY_HOME_ENV_VAR, "").strip()
+        raw = str(Path(platform_home) / "agy_cli.json") if platform_home else DEFAULT_CONFIG_PATH
     return Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
 
 
@@ -1208,6 +1260,12 @@ def make_arg_parser(description: str) -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"End-to-end advisory timeout in seconds. Default: {DEFAULT_TIMEOUT_SECONDS}.",
     )
+    if ENABLE_OUTPUT_FILE_ARGUMENT:
+        parser.add_argument(
+            "--output-file",
+            default=None,
+            help="Write all output (stdout and stderr) to this file instead of the console.",
+        )
     return parser
 
 
@@ -1238,6 +1296,7 @@ def run_advisory(
     argv: list[str] | None = None,
 ) -> int:
     """Run an Antigravity CLI advisory pass end-to-end and return an exit code."""
+    global _PROGRESS_STREAM
     if (output_contract is None) == (output_contract_builder is None):
         raise ValueError("Provide exactly one of output_contract or output_contract_builder.")
 
@@ -1246,6 +1305,44 @@ def run_advisory(
         configure_parser(parser)
     args = parser.parse_args(argv)
 
+    output_handle = None
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    original_progress_stream = _PROGRESS_STREAM
+    output_file = str(getattr(args, "output_file", "") or "").strip()
+    if output_file:
+        output_path = Path(output_file).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_handle = open(output_path, "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+        _PROGRESS_STREAM = original_stderr
+        sys.stdout = output_handle
+        sys.stderr = output_handle
+    try:
+        return _run_advisory_inner(
+            args=args,
+            role_line=role_line,
+            label=label,
+            lane=lane,
+            output_contract=output_contract,
+            output_contract_builder=output_contract_builder,
+        )
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        _PROGRESS_STREAM = original_progress_stream
+        if output_handle is not None:
+            output_handle.close()
+
+
+def _run_advisory_inner(
+    *,
+    args: argparse.Namespace,
+    role_line: str,
+    label: str,
+    lane: str,
+    output_contract: str | None = None,
+    output_contract_builder: Callable[[argparse.Namespace], str] | None = None,
+) -> int:
     brief_path = Path(args.brief_file).expanduser().resolve()
     if not brief_path.is_file():
         print(f"Brief file not found: {advisory_common._tilde_path(brief_path)}", file=sys.stderr)

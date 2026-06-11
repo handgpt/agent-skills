@@ -8,7 +8,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SHARED_SCRIPTS = ROOT / "skills" / "shared" / "scripts"
+SHARED_SCRIPTS = ROOT.parent / "common" / "scripts"
 if str(SHARED_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPTS))
 

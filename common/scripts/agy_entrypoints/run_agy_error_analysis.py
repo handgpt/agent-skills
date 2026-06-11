@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""Run a bounded Gemini CLI error-analysis pass and print advisory output."""
+"""Run a bounded Antigravity CLI error-analysis pass and print advisory output."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-def _common_scripts_dir() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidate = parent / "common" / "scripts"
-        if (candidate / "gemini_runner.py").is_file():
-            return candidate
-    raise RuntimeError("Could not locate common Gemini runner scripts.")
-
-
-_COMMON_SCRIPTS = str(_common_scripts_dir())
+_COMMON_SCRIPTS = str(Path(__file__).resolve().parents[1])
 if _COMMON_SCRIPTS not in sys.path:
     sys.path.insert(0, _COMMON_SCRIPTS)
 
-import gemini_runner  # noqa: E402
+import agy_runner  # noqa: E402
+
 
 ROLE_LINE = "You are an external debugging analyst giving a second opinion to another coding agent."
 
@@ -43,7 +35,7 @@ OUTPUT_CONTRACT = """Return concise Markdown. Prefer these sections when practic
 One short paragraph.
 
 Rules:
-- You are running via Gemini CLI on the same machine as the local project files.
+- You are running via Antigravity CLI on the same machine as the local project files.
 - The current workspace root is listed below. Analyze only files and directories inside that workspace root.
 - Read the inlined diagnostic brief below before answering.
 - Inspect the listed local paths directly instead of asking the caller to paste file contents again.
@@ -63,8 +55,8 @@ Rules:
 
 
 def main() -> int:
-    return gemini_runner.run_advisory(
-        description="Run a bounded Gemini CLI error-analysis pass and print advisory output.",
+    return agy_runner.run_advisory(
+        description="Run a bounded Antigravity CLI error-analysis pass and print advisory output.",
         role_line=ROLE_LINE,
         output_contract=OUTPUT_CONTRACT,
         label="error analysis",

@@ -11,6 +11,8 @@ release cadence.
 
 ```text
 agent-skills/
+├── common/
+│   └── scripts/
 ├── codex/
 │   ├── README.md
 │   ├── skills/
@@ -30,10 +32,11 @@ agent-skills/
 
 ## Design Principles
 
-- Keep each runtime self-contained. A user should be able to work only inside the
-  runtime directory they need.
-- Avoid a top-level shared library until a real cross-runtime maintenance burden
-  exists. Small, stable helpers are cheaper to duplicate than to couple.
+- Keep each runtime install self-contained. A user should be able to install only
+  the runtime directory they need.
+- Keep cross-runtime advisory runner logic in `common/scripts` once there is a
+  real maintenance burden. Runtime directories should contain thin platform
+  adapters, docs, and install scripts rather than duplicated runner logic.
 - Give each runtime its own `README.md` and `scripts/install.sh`.
 - Let runtimes evolve independently. Stability for one runtime should not depend on
   unfinished work in another.
@@ -42,7 +45,7 @@ agent-skills/
 
 | Runtime | Status | Notes |
 | --- | --- | --- |
-| [codex](codex/README.md) | Available | Antigravity CLI design, review, error-analysis, and pitfall-notebook skills are implemented and smoke-tested with `agy` 1.0.0. Gemini CLI advisory skills were removed because Gemini CLI is expected to go offline in June 2026. |
+| [codex](codex/README.md) | Available | Antigravity CLI design, review, error-analysis, and pitfall-notebook skills are implemented and smoke-tested with `agy` 1.0.7. Gemini CLI advisory skills were removed because Gemini CLI is expected to go offline in June 2026. |
 | [gemini-cli](gemini-cli/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
 | [claude-code](claude-code/README.md) | Available | Gemini, Antigravity CLI, Codex CLI, and pitfall-notebook advisory skills are implemented. |
 | [openclaw](openclaw/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
@@ -55,6 +58,9 @@ agent-skills/
 
 There is no repository-wide installer on purpose. Installation and configuration
 are runtime-specific.
+
+`common/scripts` is source code shared by those runtime installers; it is not a
+standalone runtime and has no separate installer.
 
 ## Notes
 

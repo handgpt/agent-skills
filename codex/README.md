@@ -3,7 +3,9 @@
 Reusable Codex skills and install helpers for external advisory checkpoints.
 
 This directory is the Codex-specific product line inside the larger
-`agent-skills` repository. Everything needed for Codex lives under `codex/`.
+`agent-skills` repository. Runtime-specific assets live under `codex/`;
+shared runner source lives under the repository-level `common/` directory and
+is copied into the Codex runtime during install.
 
 ## Layout
 
@@ -13,8 +15,7 @@ agent-skills/codex/
 │   ├── agy-design-checkpoint/
 │   ├── agy-error-analysis/
 │   ├── agy-review/
-│   ├── pitfall-notebook/
-│   └── shared/
+│   └── pitfall-notebook/
 ├── templates/
 │   └── home-AGENTS.snippet.md
 ├── tests/
@@ -98,16 +99,20 @@ Install the skills and append the home-level AGENTS rules under `~/AGENTS.md`:
 ## Development Notes
 
 - `skills/` contains the Codex runtime source of truth.
+- `../common/scripts/` contains the shared Antigravity, Codex CLI, and Gemini CLI
+  runner implementation used across runtimes.
 - `tests/` provides focused coverage for the shared Antigravity runner helpers and the
   pitfall notebook updater.
 - `scripts/install.sh` is the supported way to install or refresh the Codex
-  runtime assets locally.
+  runtime assets locally. It copies `../common/scripts` to
+  `~/.codex/skills/shared/scripts` so installed Codex skills remain
+  self-contained.
 - The install script writes Antigravity home-level markers and also removes the older
   Gemini marker block during upgrades.
 
 ## Notes
 
-- `skills/` is the source of truth for Git sharing inside the Codex runtime.
+- `skills/` plus `../common/scripts` are the source of truth for Git sharing inside the Codex runtime.
 - `~/.codex/skills` is the runtime install location used by Codex.
 - The home-level `AGENTS.md` rules only apply to projects started under your home directory tree.
 - Restart Codex after installing or updating skills so the runtime skill list refreshes.

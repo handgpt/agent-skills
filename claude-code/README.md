@@ -163,12 +163,11 @@ claude-code/
     │   ├── SKILL.md
     │   ├── scripts/run_codex_design_check.py
     │   └── references/design-brief-template.md
-    └── shared/
-        └── scripts/
-            ├── gemini_runner.py        # Shared Gemini CLI runner
-            ├── agy_runner.py           # Shared Antigravity CLI runner
-            └── codex_runner.py         # Shared Codex CLI runner
 ```
+
+The Antigravity, Gemini CLI, and Codex CLI runner implementations live once in
+`../common/scripts`. The scripts under `skills/*/scripts` are runtime adapters
+that locate those common runners.
 
 ## Design Principles
 
