@@ -43,6 +43,8 @@ python3 scripts/run_agy_design_check.py \
 
 The wrapper launches Antigravity CLI with the configured prompt mode and model. Default is interactive prompt mode, `agy -i "<prompt>"`, with `--model "Gemini 3.5 Flash (High)"` when supported. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. Override the model with `CODEX_AGY_MODEL` or config `"model"`; supported values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 
+If `agy` reports `E... not logged into Antigravity`, the wrapper prints the matching `W...` and `E...` log lines and relaunches `agy` up to 5 times by default. If the skill command still exits with a login failure after those internal retries, rerun the same command with the same brief and context files up to 2 more times before treating Antigravity as unavailable.
+
 This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
 
 Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-design-checkpoint` workflow to `$agy-design-checkpoint` as soon as possible.

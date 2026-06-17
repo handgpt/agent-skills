@@ -42,6 +42,8 @@ When supported by `agy`, the runner passes `--model "Gemini 3.5 Flash (High)"` b
 
 For multi-project advisory scopes, the runner passes extra project roots through repeatable `--add-dir` flags when supported by `agy`.
 
+If `agy` reports `E... not logged into Antigravity`, the wrapper prints the matching `W...` and `E...` log lines and relaunches `agy` up to 5 times by default. If the skill command still exits with a login failure after those internal retries, rerun the same command with the same brief and context files up to 2 more times before treating Antigravity as unavailable.
+
 This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. Re-run tests and both print/interactive advisory smoke tests after upgrading `agy`.
 
 ## Guardrails
