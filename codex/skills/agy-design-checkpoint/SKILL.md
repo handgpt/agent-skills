@@ -47,7 +47,7 @@ If `agy` reports `E... not logged into Antigravity`, the wrapper prints the matc
 
 This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
 
-Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is expected to go offline in June 2026. Migrate any old `$gemini-design-checkpoint` workflow to `$agy-design-checkpoint` as soon as possible.
+Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is no longer supported. Migrate any old `$gemini-design-checkpoint` workflow to `$agy-design-checkpoint`.
 
 `--context-file` paths are priority starting hints only. Antigravity runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
 

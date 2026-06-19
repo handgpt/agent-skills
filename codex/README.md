@@ -40,7 +40,7 @@ agent-skills/codex/
 
 The Antigravity skills are advisory only. They do not modify files and they are designed to fail open: if Antigravity CLI is unavailable or times out, Codex continues normally.
 
-Antigravity CLI (`agy`) is now the default Codex external advisory path. The skills pass `--model "Gemini 3.5 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. The old Codex Gemini advisory skills were removed because Gemini CLI is expected to go offline in June 2026. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review` as soon as possible.
+Antigravity CLI (`agy`) is now the default Codex external advisory path. The skills pass `--model "Gemini 3.5 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. The old Codex Gemini advisory skills were removed because Gemini CLI is no longer supported. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review`.
 
 This implementation has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the Codex tests and at least one advisory smoke test because prompt-mode flags, log wording, or transcript layout may change.
 
@@ -102,8 +102,8 @@ Install the skills and append the home-level AGENTS rules under `~/AGENTS.md`:
 ## Development Notes
 
 - `skills/` contains the Codex runtime source of truth.
-- `../common/scripts/` contains the shared Antigravity, Codex CLI, and Gemini CLI
-  runner implementation used across runtimes.
+- `../common/scripts/` contains the shared Antigravity and Codex CLI runner
+  implementations used across runtimes.
 - `tests/` provides focused coverage for the shared Antigravity runner helpers and the
   pitfall notebook updater.
 - `scripts/install.sh` is the supported way to install or refresh the Codex

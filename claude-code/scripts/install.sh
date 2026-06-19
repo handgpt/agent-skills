@@ -16,6 +16,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_CODE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMMANDS_SRC="$CLAUDE_CODE_DIR/commands"
 SKILLS_DIR="$CLAUDE_CODE_DIR/skills"
+LEGACY_GEMINI_COMMANDS=(
+    "gemini-review.md"
+    "gemini-error-analysis.md"
+    "gemini-design-checkpoint.md"
+)
 
 # Parse arguments.
 PROJECT_DIR=""
@@ -47,6 +52,14 @@ echo ""
 
 # Create target directories.
 mkdir -p "$TARGET_COMMANDS"
+
+# Remove legacy Gemini CLI slash commands that may have been installed by older versions.
+for legacy_cmd in "${LEGACY_GEMINI_COMMANDS[@]}"; do
+    if [[ -e "$TARGET_COMMANDS/$legacy_cmd" ]]; then
+        rm -rf "$TARGET_COMMANDS/$legacy_cmd"
+        echo "  Removed legacy command: /$( echo "$legacy_cmd" | sed 's/\.md$//' )"
+    fi
+done
 
 # Copy slash command files.
 COMMANDS_INSTALLED=0
@@ -83,9 +96,6 @@ echo ""
 echo "Done. Installed $COMMANDS_INSTALLED slash commands."
 echo ""
 echo "Available commands:"
-echo "  /gemini-review              - Advisory code review via Gemini CLI"
-echo "  /gemini-error-analysis      - Debugging second opinion via Gemini CLI"
-echo "  /gemini-design-checkpoint   - Design critique via Gemini CLI"
 echo "  /agy-review                 - Advisory code review via Antigravity CLI"
 echo "  /agy-error-analysis         - Debugging second opinion via Antigravity CLI"
 echo "  /agy-design-checkpoint      - Design critique via Antigravity CLI"
@@ -95,7 +105,6 @@ echo "  /codex-design-checkpoint    - Design critique via Codex CLI"
 echo "  /pitfall-notebook           - Per-project pitfall memory"
 echo ""
 echo "Prerequisites:"
-echo "  - Gemini CLI installed and available in PATH (for Gemini skills)"
 echo "  - Antigravity CLI agy installed (tested with agy 1.0.7); if it is not"
 echo "    available in PATH, set CLAUDE_AGY_CMD or ~/.claude/agy_cli.json command"
 echo "  - Codex CLI installed and available in PATH (for Codex skills)"
@@ -116,9 +125,6 @@ echo "      pip install opentelemetry-api opentelemetry-sdk"
 echo "    The runner is zero-config when these packages are absent."
 echo ""
 echo "Environment variables (optional):"
-echo "  CLAUDE_GEMINI_MODEL              Override Gemini model (default: gemini-3.1-pro-preview)"
-echo "  CLAUDE_GEMINI_CONTINUATION_RETRIES"
-echo "                                   Same-session continuation retries after no final answer (default: 0)"
 echo "  CLAUDE_AGY_CMD                  Override Antigravity CLI command (default: agy)"
 echo "  CLAUDE_AGY_MODE                 Antigravity prompt mode: print or interactive (default: print)"
 echo "  CLAUDE_AGY_CONFIG               Antigravity config JSON path (default: ~/.claude/agy_cli.json)"
@@ -129,4 +135,4 @@ echo "                                   Auto-approve Antigravity tool permissio
 echo "  CLAUDE_CODEX_MODEL               Override Codex model (default: gpt-5.4)"
 echo "  TRACEPARENT                      W3C trace context (auto-set by Claude Code"
 echo "                                   when OTel tracing is enabled; consumed by"
-echo "                                   the runner to parent Gemini spans)"
+echo "                                   the runner to parent advisory spans)"
