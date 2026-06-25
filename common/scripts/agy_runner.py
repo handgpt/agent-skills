@@ -1325,6 +1325,21 @@ def _run_interactive(
                     if _request_interactive_exit(master_fd):
                         exit_requested = True
                         _emit_progress("[Antigravity exit]", "requested /quit after transcript output")
+                        _close_interactive(process, master_fd)
+                        interactive_closed = True
+                        return subprocess.CompletedProcess(
+                            args,
+                            0,
+                            latest_text,
+                            "\n".join(
+                                part
+                                for part in (
+                                    captured_output.strip(),
+                                    _format_log_warning_error_diagnostics(log_path),
+                                )
+                                if part
+                            ),
+                        )
                 elif not latest_text:
                     terminal_failure_text = _log_terminal_failure(log_path)
                     login_failure_text = _log_login_failure(log_path)

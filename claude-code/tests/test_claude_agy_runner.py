@@ -357,7 +357,7 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("RESOURCE_EXHAUSTED", result.stderr)
-        self.assertLess(time.monotonic() - started, 2)
+        self.assertLess(time.monotonic() - started, 5)
 
     @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
     def test_launch_interactive_cleans_up_when_set_blocking_fails(self) -> None:

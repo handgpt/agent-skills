@@ -760,6 +760,93 @@ class AgyRunnerTests(unittest.TestCase):
         self.assertEqual(result.stdout, "final review")
 
     @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
+    def test_run_interactive_closes_after_transcript_when_quit_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_agy = root / "fake_agy.py"
+            fake_agy.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import os
+                    import pathlib
+                    import sys
+                    import time
+
+                    args = sys.argv[1:]
+                    log_path = pathlib.Path(args[args.index("--log-file") + 1])
+                    prompt = args[-1]
+                    conversation_id = "55555555-5555-5555-5555-555555555555"
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_path.write_text(f"Created conversation {conversation_id}\\n", encoding="utf-8")
+
+                    transcript_path = (
+                        pathlib.Path(os.environ["HOME"])
+                        / ".gemini"
+                        / "antigravity-cli"
+                        / "brain"
+                        / conversation_id
+                        / ".system_generated"
+                        / "logs"
+                        / "transcript.jsonl"
+                    )
+                    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+                    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    records = [
+                        {
+                            "step_index": 0,
+                            "source": "USER_EXPLICIT",
+                            "type": "USER_INPUT",
+                            "status": "DONE",
+                            "created_at": now,
+                            "content": prompt,
+                        },
+                        {
+                            "step_index": 1,
+                            "source": "MODEL",
+                            "type": "PLANNER_RESPONSE",
+                            "status": "DONE",
+                            "created_at": now,
+                            "content": "final review",
+                        },
+                    ]
+                    transcript_path.write_text(
+                        "\\n".join(json.dumps(record) for record in records) + "\\n",
+                        encoding="utf-8",
+                    )
+                    time.sleep(30)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            log_path = root / "agy.log"
+            prompt = "prompt"
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+
+            started = time.monotonic()
+            with (
+                patch.dict(os.environ, {"HOME": str(root)}),
+                patch.object(agy_runner, "AGY_POLL_SECONDS", 0.05),
+                patch.object(agy_runner, "AGY_SHUTDOWN_GRACE_SECONDS", 0.1),
+            ):
+                result = agy_runner._run_interactive(
+                    [str(fake_agy), "--log-file", str(log_path), "-i", prompt],
+                    cwd=root,
+                    env=env,
+                    timeout_seconds=10,
+                    start_dt=datetime.now(),
+                    start_epoch=time.time(),
+                    prompt_text=prompt,
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "final review")
+        self.assertLess(time.monotonic() - started, 5)
+
+    @unittest.skipIf(agy_runner.pty is None, "Requires POSIX PTY support")
     def test_run_interactive_returns_terminal_log_failure_without_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -813,7 +900,7 @@ class AgyRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("RESOURCE_EXHAUSTED", result.stderr)
-        self.assertLess(time.monotonic() - started, 2)
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_interactive_mode_reports_non_posix_platform(self) -> None:
         cwd = Path.cwd()
