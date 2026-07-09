@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import contextlib
 import importlib.util
-import io
 import os
 import sys
 import tempfile
@@ -143,20 +141,6 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported Antigravity model"):
                 agy_runner._configured_agy_model({})
 
-    def test_project_add_dirs_excludes_primary_root_and_missing_dirs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            project_a = root / "a"
-            project_b = root / "b"
-            missing = root / "missing"
-            project_a.mkdir()
-            project_b.mkdir()
-
-            self.assertEqual(
-                agy_runner._project_add_dirs(root, (project_a, project_b, missing, project_a)),
-                (project_a.resolve(), project_b.resolve()),
-            )
-
     def test_latest_run_model_text_rejects_recent_duplicate_when_transcript_is_stale(self) -> None:
         start_epoch = datetime(2026, 5, 20, 0, 5, tzinfo=timezone.utc).timestamp()
         records = [
@@ -215,43 +199,6 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
             ),
             "",
         )
-
-    def test_output_file_excludes_progress_telemetry(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            brief_path = root / "brief.md"
-            output_path = root / "review.md"
-            brief_path.write_text("brief", encoding="utf-8")
-
-            def fake_inner(**_kwargs: object) -> int:
-                agy_runner._emit_progress("[Antigravity step]", "progress")
-                agy_runner._emit_wait_progress(10, 0, 100, -1)
-                print("final advisory")
-                return 0
-
-            progress = io.StringIO()
-            with (
-                patch.object(agy_runner, "_run_advisory_inner", side_effect=fake_inner),
-                contextlib.redirect_stderr(progress),
-            ):
-                exit_code = agy_runner.run_advisory(
-                    description="review",
-                    role_line="role",
-                    label="review",
-                    lane="review",
-                    output_contract="contract",
-                    argv=[
-                        "--brief-file",
-                        str(brief_path),
-                        "--output-file",
-                        str(output_path),
-                    ],
-                )
-
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(output_path.read_text(encoding="utf-8"), "final advisory\n")
-            self.assertIn("[Antigravity step] progress", progress.getvalue())
-            self.assertIn("[Antigravity wait] 10% (10s/100s)", progress.getvalue())
 
     def test_record_epoch_treats_naive_iso_timestamp_as_utc(self) -> None:
         self.assertEqual(

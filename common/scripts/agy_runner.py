@@ -2,8 +2,6 @@
 """Shared Antigravity CLI advisory runner used by agent advisory skills."""
 from __future__ import annotations
 
-import argparse
-import errno
 import json
 import os
 import re
@@ -21,8 +19,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import advisory_common
 
 try:
     import pty
@@ -1548,7 +1544,7 @@ def run_agy(
                     command,
                     1,
                     "",
-                    validation_error.replace("Gemini", "Antigravity"),
+                    validation_error,
                 )
             if normalized_stdout:
                 return subprocess.CompletedProcess(command, 0, normalized_stdout, result.stderr)
@@ -1556,191 +1552,3 @@ def run_agy(
 
     assert last_result is not None
     return last_result
-
-
-def make_arg_parser(description: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--brief-file", required=True, help="Markdown or text file with the brief.")
-    parser.add_argument(
-        "--project-root",
-        action="append",
-        default=[],
-        help=(
-            "Optional project root directory. Repeat this flag to intentionally scope "
-            "one advisory pass across multiple projects under the current workspace."
-        ),
-    )
-    parser.add_argument(
-        "--context-file",
-        action="append",
-        default=[],
-        help="Optional local file or directory Antigravity should treat as a high-priority starting point.",
-    )
-    parser.add_argument(
-        "--timeout-seconds",
-        type=int,
-        default=DEFAULT_TIMEOUT_SECONDS,
-        help=f"End-to-end advisory timeout in seconds. Default: {DEFAULT_TIMEOUT_SECONDS}.",
-    )
-    if ENABLE_OUTPUT_FILE_ARGUMENT:
-        parser.add_argument(
-            "--output-file",
-            default=None,
-            help="Write all output (stdout and stderr) to this file instead of the console.",
-        )
-    return parser
-
-
-def _project_add_dirs(project_root: Path, project_roots: tuple[Path, ...]) -> tuple[Path, ...]:
-    resolved_project_root = project_root.resolve()
-    add_dirs: list[Path] = []
-    seen: set[Path] = set()
-    for root in project_roots:
-        resolved_root = root.resolve()
-        if resolved_root == resolved_project_root or resolved_root in seen:
-            continue
-        if not resolved_root.exists() or not resolved_root.is_dir():
-            continue
-        seen.add(resolved_root)
-        add_dirs.append(resolved_root)
-    return tuple(add_dirs)
-
-
-def run_advisory(
-    *,
-    description: str,
-    role_line: str,
-    label: str,
-    lane: str,
-    output_contract: str | None = None,
-    output_contract_builder: Callable[[argparse.Namespace], str] | None = None,
-    configure_parser: Callable[[argparse.ArgumentParser], None] | None = None,
-    argv: list[str] | None = None,
-) -> int:
-    """Run an Antigravity CLI advisory pass end-to-end and return an exit code."""
-    global _PROGRESS_STREAM
-    if (output_contract is None) == (output_contract_builder is None):
-        raise ValueError("Provide exactly one of output_contract or output_contract_builder.")
-
-    parser = make_arg_parser(description)
-    if configure_parser is not None:
-        configure_parser(parser)
-    args = parser.parse_args(argv)
-
-    output_handle = None
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    original_progress_stream = _PROGRESS_STREAM
-    output_file = str(getattr(args, "output_file", "") or "").strip()
-    if output_file:
-        output_path = Path(output_file).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_handle = open(output_path, "w", encoding="utf-8", buffering=1)  # noqa: SIM115
-        _PROGRESS_STREAM = original_stderr
-        sys.stdout = output_handle
-        sys.stderr = output_handle
-    try:
-        return _run_advisory_inner(
-            args=args,
-            role_line=role_line,
-            label=label,
-            lane=lane,
-            output_contract=output_contract,
-            output_contract_builder=output_contract_builder,
-        )
-    finally:
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-        _PROGRESS_STREAM = original_progress_stream
-        if output_handle is not None:
-            output_handle.close()
-
-
-def _run_advisory_inner(
-    *,
-    args: argparse.Namespace,
-    role_line: str,
-    label: str,
-    lane: str,
-    output_contract: str | None = None,
-    output_contract_builder: Callable[[argparse.Namespace], str] | None = None,
-) -> int:
-    brief_path = Path(args.brief_file).expanduser().resolve()
-    if not brief_path.is_file():
-        print(f"Brief file not found: {advisory_common._tilde_path(brief_path)}", file=sys.stderr)
-        return 2
-
-    default_project_root = advisory_common.detect_project_root()
-    workspace_boundary = advisory_common.detect_workspace_root()
-    project_roots = advisory_common._normalize_multi_project_roots(
-        args.project_root, args.context_file, default_project_root, workspace_boundary
-    )
-    project_root = advisory_common._multi_project_workspace_root(
-        project_roots, default_project_root, workspace_boundary
-    )
-    focus_root = advisory_common._focus_scope_root(args.context_file, project_root, project_roots)
-    context_entries = advisory_common.describe_paths(args.context_file, project_root, project_roots)
-    resolved_output_contract = (
-        output_contract_builder(args) if output_contract_builder else output_contract
-    )
-    assert resolved_output_contract is not None
-
-    brief_text = brief_path.read_text(encoding="utf-8")
-    prompt = advisory_common.build_prompt(
-        project_root,
-        brief_text,
-        context_entries,
-        lane=lane,
-        focus_root=focus_root,
-        project_roots=project_roots,
-        role_line=role_line,
-        output_contract=resolved_output_contract,
-        runner_name="Antigravity CLI",
-    )
-    output_normalizer = advisory_common.build_output_normalizer(resolved_output_contract)
-    output_validator = advisory_common.build_output_validator(resolved_output_contract)
-
-    try:
-        result = run_agy(
-            prompt,
-            args.timeout_seconds,
-            project_root,
-            add_dirs=_project_add_dirs(project_root, project_roots),
-            output_normalizer=output_normalizer,
-            output_validator=output_validator,
-        )
-    except FileNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
-        return 3
-    except subprocess.TimeoutExpired as exc:
-        print(f"Antigravity {label} timed out after {args.timeout_seconds} seconds total wait.", file=sys.stderr)
-        timeout_output = str(getattr(exc, "output", "") or getattr(exc, "stderr", "")).strip()
-        if timeout_output:
-            print(timeout_output[:MAX_OUTPUT_CHARS], file=sys.stderr)
-        return 4
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    except OSError as exc:
-        if exc.errno == errno.E2BIG:
-            print(
-                "Antigravity inline prompt is too large for this platform's command-line limit. "
-                "Reduce the brief size.",
-                file=sys.stderr,
-            )
-            return 5
-        print(f"Antigravity {label} failed to start: {exc}", file=sys.stderr)
-        return 5
-
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
-    if result.returncode != 0 or not stdout:
-        print(f"Antigravity {label} failed with exit code {result.returncode}.", file=sys.stderr)
-        if stderr:
-            print(stderr[:MAX_OUTPUT_CHARS], file=sys.stderr)
-        if stdout:
-            print(stdout[:MAX_OUTPUT_CHARS], file=sys.stderr)
-        return 5
-
-    print(stdout[:MAX_OUTPUT_CHARS])
-    return 0

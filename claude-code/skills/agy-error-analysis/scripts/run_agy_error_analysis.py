@@ -11,21 +11,21 @@ def _common_scripts_dir() -> Path:
     for parent in current.parents:
         for relative in (Path("common") / "scripts", Path("shared") / "scripts"):
             candidate = parent / relative
-            if (candidate / "agy_runner.py").is_file() and (
-                candidate / "agy_entrypoints" / "run_agy_error_analysis.py"
+            if (candidate / "advisor_runner.py").is_file() and (
+                candidate / "advisor_entrypoints" / "run_advisor_error_analysis.py"
             ).is_file():
                 return candidate
-    raise RuntimeError("Could not locate common Antigravity runner scripts.")
+    raise RuntimeError("Could not locate common advisor runner scripts.")
 
 
 _COMMON_SCRIPTS = str(_common_scripts_dir())
 if _COMMON_SCRIPTS not in sys.path:
     sys.path.insert(0, _COMMON_SCRIPTS)
 
-import agy_runner  # noqa: E402
-from agy_entrypoints.run_agy_error_analysis import main  # noqa: E402
+import advisor_runner  # noqa: E402
+from advisor_entrypoints.run_advisor_error_analysis import main  # noqa: E402
 
-agy_runner.configure_platform(agy_runner.CLAUDE_CODE_AGY_PLATFORM)
+advisor_runner.configure_platform(advisor_runner.CLAUDE_CODE_ADVISOR_PLATFORM)
 
 
 if __name__ == "__main__":

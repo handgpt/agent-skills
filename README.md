@@ -42,7 +42,7 @@ agent-skills/
 
 | Runtime | Status | Notes |
 | --- | --- | --- |
-| [codex](codex/README.md) | Available | Antigravity CLI design, review, error-analysis, and pitfall-notebook skills are implemented and smoke-tested with `agy` 1.0.7. Gemini CLI advisory skills were removed because Gemini CLI is no longer supported. |
+| [codex](codex/README.md) | Available | Provider-routed advisor design, review, error-analysis, and pitfall-notebook skills are implemented. Antigravity CLI is the default provider; Grok CLI is available as an optional provider. Gemini CLI advisory skills were removed because Gemini CLI is no longer supported. |
 | [claude-code](claude-code/README.md) | Available | Antigravity CLI, Codex CLI, and pitfall-notebook advisory skills are implemented. |
 | [openclaw](openclaw/README.md) | Planned | Directory scaffold exists; runtime-specific assets are not published yet. |
 

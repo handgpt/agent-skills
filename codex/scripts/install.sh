@@ -9,11 +9,18 @@ TEMPLATE_SRC="${REPO_ROOT}/templates/home-AGENTS.snippet.md"
 CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
 SKILLS_DEST="${CODEX_HOME_DIR}/skills"
 HOME_AGENTS="${HOME}/AGENTS.md"
-MARKER_START="# >>> codex-skills antigravity advisory >>>"
-MARKER_END="# <<< codex-skills antigravity advisory <<<"
+MARKER_START="# >>> codex-skills advisor checkpoints >>>"
+MARKER_END="# <<< codex-skills advisor checkpoints <<<"
+LEGACY_AGY_MARKER_START="# >>> codex-skills antigravity advisory >>>"
+LEGACY_AGY_MARKER_END="# <<< codex-skills antigravity advisory <<<"
 LEGACY_MARKER_START="# >>> codex-skills gemini advisory >>>"
 LEGACY_MARKER_END="# <<< codex-skills gemini advisory <<<"
 INSTALL_HOME_AGENTS="false"
+LEGACY_AGY_SKILLS=(
+  "agy-design-checkpoint"
+  "agy-error-analysis"
+  "agy-review"
+)
 LEGACY_GEMINI_SKILLS=(
   "gemini-design-checkpoint"
   "gemini-error-analysis"
@@ -35,7 +42,7 @@ done
 
 mkdir -p "${SKILLS_DEST}"
 
-for legacy_skill in "${LEGACY_GEMINI_SKILLS[@]}"; do
+for legacy_skill in "${LEGACY_AGY_SKILLS[@]}" "${LEGACY_GEMINI_SKILLS[@]}"; do
   rm -rf "${SKILLS_DEST}/${legacy_skill}"
 done
 
@@ -66,10 +73,12 @@ ${MARKER_END}"
     awk \
       -v start="${MARKER_START}" \
       -v end="${MARKER_END}" \
+      -v legacy_agy_start="${LEGACY_AGY_MARKER_START}" \
+      -v legacy_agy_end="${LEGACY_AGY_MARKER_END}" \
       -v legacy_start="${LEGACY_MARKER_START}" \
       -v legacy_end="${LEGACY_MARKER_END}" '
-      $0 == start || $0 == legacy_start {skip=1; next}
-      $0 == end || $0 == legacy_end {skip=0; next}
+      $0 == start || $0 == legacy_agy_start || $0 == legacy_start {skip=1; next}
+      $0 == end || $0 == legacy_agy_end || $0 == legacy_end {skip=0; next}
       skip != 1 {print}
     ' "${HOME_AGENTS}" > "${tmp_file}"
     {
@@ -85,7 +94,7 @@ EOF
 fi
 
 echo "Installed skills to ${SKILLS_DEST}"
-echo "Removed legacy Gemini advisory skills from ${SKILLS_DEST}"
+echo "Removed legacy Agy and Gemini advisory skills from ${SKILLS_DEST}"
 if [[ "${INSTALL_HOME_AGENTS}" == "true" ]]; then
   echo "Updated ${HOME_AGENTS}"
 else

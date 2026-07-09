@@ -41,7 +41,15 @@ def _load_runner_module() -> tuple[object, object]:
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         module.configure_platform(module.CODEX_AGY_PLATFORM)
-        advisory_module = sys.modules["advisory_common"]
+        advisory_spec = importlib.util.spec_from_file_location(
+            "advisory_common",
+            SHARED_SCRIPTS / "advisory_common.py",
+        )
+        if advisory_spec is None or advisory_spec.loader is None:
+            raise RuntimeError("Could not load advisory_common test module")
+        advisory_module = importlib.util.module_from_spec(advisory_spec)
+        sys.modules["advisory_common"] = advisory_module
+        advisory_spec.loader.exec_module(advisory_module)
         return module, advisory_module
     finally:
         sys.path[:] = previous_path
@@ -216,9 +224,6 @@ class AgyRunnerTests(unittest.TestCase):
             self.assertEqual(agy_runner.AGY_MODEL_ENV_VAR, "CLAUDE_AGY_MODEL")
             self.assertEqual(agy_runner.AGY_AUTH_RETRIES_ENV_VAR, "CLAUDE_AGY_AUTH_RETRIES")
             self.assertTrue(agy_runner.ENABLE_OUTPUT_FILE_ARGUMENT)
-            self.assertTrue(
-                any(action.dest == "output_file" for action in agy_runner.make_arg_parser("test")._actions)
-            )
 
             agy_runner.configure_platform(agy_runner.CODEX_AGY_PLATFORM)
             self.assertEqual(agy_runner.DEFAULT_MODE, "interactive")
@@ -227,25 +232,8 @@ class AgyRunnerTests(unittest.TestCase):
             self.assertEqual(agy_runner.AGY_MODEL_ENV_VAR, "CODEX_AGY_MODEL")
             self.assertEqual(agy_runner.AGY_AUTH_RETRIES_ENV_VAR, "CODEX_AGY_AUTH_RETRIES")
             self.assertFalse(agy_runner.ENABLE_OUTPUT_FILE_ARGUMENT)
-            self.assertFalse(
-                any(action.dest == "output_file" for action in agy_runner.make_arg_parser("test")._actions)
-            )
         finally:
             agy_runner.configure_platform(agy_runner.CODEX_AGY_PLATFORM)
-
-    def test_project_add_dirs_excludes_primary_root_and_missing_dirs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            project_a = root / "a"
-            project_b = root / "b"
-            missing = root / "missing"
-            project_a.mkdir()
-            project_b.mkdir()
-
-            self.assertEqual(
-                agy_runner._project_add_dirs(root, (project_a, project_b, missing, project_a)),
-                (project_a.resolve(), project_b.resolve()),
-            )
 
     def test_run_print_returns_terminal_log_failure_after_conversation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

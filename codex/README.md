@@ -12,15 +12,17 @@ is copied into the Codex runtime during install.
 ```text
 agent-skills/codex/
 ├── skills/
-│   ├── agy-design-checkpoint/
-│   ├── agy-error-analysis/
-│   ├── agy-review/
+│   ├── advisor-design-checkpoint/
+│   ├── advisor-error-analysis/
+│   ├── advisor-review/
 │   └── pitfall-notebook/
 ├── templates/
 │   └── home-AGENTS.snippet.md
 ├── tests/
-│   ├── test_agy_runner.py
-│   ├── test_agy_review_prompt.py
+│   ├── test_advisor_review_prompt.py
+│   ├── test_advisor_runner.py
+│   ├── test_codex_agy_runner.py
+│   ├── test_grok_runner.py
 │   ├── test_advisory_common.py
 │   └── test_pitfall_notebook.py
 └── scripts/
@@ -29,18 +31,23 @@ agent-skills/codex/
 
 ## Included skills
 
-- `agy-design-checkpoint`
-  Use before major technical design decisions. The skill asks Antigravity CLI for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices, with explicit best-practice checks across both the whole design and the module boundaries, grounded in official docs and community experience when relevant.
-- `agy-error-analysis`
-  Use when Codex is stuck on a non-trivial failure after an initial local inspection. The skill asks Antigravity CLI to reason about likely causes, separate code logic from environmental issues, and suggest the highest-signal next checks.
-- `agy-review`
-  Use after meaningful code changes and before the final response. The skill asks Antigravity CLI for a concise advisory review focused on bugs, regressions, missing tests, risky assumptions, unused code, and safe simplification opportunities. At important checkpoints it also supports a structural mode that inspects code structure, module boundaries, and cross-module design risks.
+- `advisor-design-checkpoint`
+  Use before major technical design decisions. The skill asks the selected advisor provider for a concise second opinion on architecture, protocol, repo layout, migration, and other high-impact choices, with explicit best-practice checks across both the whole design and the module boundaries, grounded in official docs and community experience when relevant.
+- `advisor-error-analysis`
+  Use when Codex is stuck on a non-trivial failure after an initial local inspection. The skill asks the selected advisor provider to reason about likely causes, separate code logic from environmental issues, and suggest the highest-signal next checks.
+- `advisor-review`
+  Use after meaningful code or artifact changes and before the final response. The skill asks the selected advisor provider for a concise advisory review focused on bugs, regressions, missing tests, risky assumptions, unused code, safe simplification opportunities, or artifact quality. At important code checkpoints it also supports a structural mode that inspects code structure, module boundaries, and cross-module design risks.
+  For non-code artifacts, pass `--focus article`, `--focus doc`, `--focus spec`, `--focus prompt`, or `--focus general`; structural mode then reviews artifact organization rather than code module boundaries.
 - `pitfall-notebook`
   Use to maintain a concise per-project markdown notebook of previously fixed pitfalls. Codex should read it before non-trivial implementation or review work and update it after successfully fixing a meaningful blocker.
 
-The Antigravity skills are advisory only. They do not modify files and they are designed to fail open: if Antigravity CLI is unavailable or times out, Codex continues normally.
+The advisor skills are advisory only. They do not modify files and they are designed to fail open: if the selected provider is unavailable or times out, Codex continues normally.
 
-Antigravity CLI (`agy`) is now the default Codex external advisory path. The skills pass `--model "Gemini 3.5 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. The old Codex Gemini advisory skills were removed because Gemini CLI is no longer supported. Migrate any `$gemini-*` workflow to `$agy-design-checkpoint`, `$agy-error-analysis`, or `$agy-review`.
+Antigravity CLI (`agy`) is the default Codex external advisory provider. The skills pass `--model "Gemini 3.5 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
+
+Grok CLI is available as an optional provider. Select it with `CODEX_ADVISOR_PROVIDER=grok`, `--provider grok`, or `"provider": "grok"` in `~/.codex/advisor_cli.json`. The Grok transport uses `grok --prompt-file ... --output-format streaming-json` and defaults to `--permission-mode bypassPermissions`.
+
+The old Codex Gemini advisory skills were removed because Gemini CLI is no longer supported. Migrate any `$gemini-*` workflow to `$advisor-design-checkpoint`, `$advisor-error-analysis`, or `$advisor-review`.
 
 This implementation has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the Codex tests and at least one advisory smoke test because prompt-mode flags, log wording, or transcript layout may change.
 
@@ -50,11 +57,19 @@ When the matching `AGENTS.md` rules are installed, Codex should run these adviso
 
 The wrappers pass local file and directory paths to the external reviewer so it can inspect the workspace directly on disk instead of receiving large pasted file bodies.
 
-The Antigravity runner launches from the same single-project or multi-project workspace root. By default it uses interactive prompt mode, `agy -i "<prompt>"`; set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. In both modes it sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
+The advisor runner launches from the same single-project or multi-project workspace root. For Antigravity, the default is interactive prompt mode, `agy -i "<prompt>"`; set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. In both modes it sets an explicit Antigravity CLI log file when supported, reads the matching transcript under `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` as a fallback to stdout, and prints progress from transcript records while waiting.
 
 If the Antigravity CLI log reports `E... You are not logged into Antigravity`, the runner treats that as a transient login failure, prints matching `W...` and `E...` log lines, and relaunches `agy` up to 5 times by default.
 
-Use `~/.codex/agy_cli.json` to switch modes or models without editing skill code:
+Use `~/.codex/advisor_cli.json` to select the provider without editing skill code:
+
+```json
+{
+  "provider": "agy"
+}
+```
+
+Use `~/.codex/agy_cli.json` to switch Antigravity modes or models:
 
 ```json
 {
@@ -69,15 +84,29 @@ Use `~/.codex/agy_cli.json` to switch modes or models without editing skill code
 
 If `agy` is not on `PATH`, set `"command": "~/.local/bin/agy"` or export `CODEX_AGY_CMD=~/.local/bin/agy`. Environment variables override the config file: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`, `CODEX_AGY_MODEL`, `CODEX_AGY_PRINT_TIMEOUT`, `CODEX_AGY_AUTH_RETRIES`, and `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`.
 
+Use `~/.codex/grok_cli.json` to configure Grok:
+
+```json
+{
+  "command": "grok",
+  "output_format": "streaming-json",
+  "permission_mode": "bypassPermissions",
+  "no_memory": true,
+  "verbatim": true
+}
+```
+
+Environment variables override the Grok config file: `CODEX_GROK_CMD`, `CODEX_GROK_CONFIG`, `CODEX_GROK_MODEL`, `CODEX_GROK_EFFORT`, `CODEX_GROK_OUTPUT_FORMAT`, `CODEX_GROK_PERMISSION_MODE`, `CODEX_GROK_SANDBOX`, `CODEX_GROK_ALWAYS_APPROVE`, `CODEX_GROK_NO_MEMORY`, and `CODEX_GROK_VERBATIM`.
+
 `--context-file` entries are treated as priority starting points rather than a hard sandbox or an exhaustive file list. The external reviewer runs from the selected workspace root and may inspect other workspace-local files when the brief requires it.
 
-When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches the external reviewer's `cwd` to their common ancestor inside that workspace, passes the other existing project roots with `--add-dir` when supported, and lists each project explicitly in the prompt with a project-scope key.
+When one advisory must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves those roots inside the current Codex workspace, switches the external reviewer's `cwd` to their common ancestor inside that workspace, passes other existing project roots through provider-specific mechanisms when supported, and lists each project explicitly in the prompt with a project-scope key.
 
-The runner resolves `CODEX_AGY_CMD` or the config `command` first, then tries `agy` on `PATH`, and finally checks `~/.local/bin/agy` when the command is the default `agy`. Set `CODEX_AGY_PRINT_TIMEOUT` only if you need to override the print-mode timeout passed to Antigravity CLI when supported.
+The Antigravity runner resolves `CODEX_AGY_CMD` or the config `command` first, then tries `agy` on `PATH`, and finally checks `~/.local/bin/agy` when the command is the default `agy`. The Grok runner resolves `CODEX_GROK_CMD` or the config `command`, then tries `grok` on `PATH`. Set `CODEX_AGY_PRINT_TIMEOUT` only if you need to override the print-mode timeout passed to Antigravity CLI when supported.
 
 If the pitfall notebook is personal agent memory rather than shared team knowledge, projects should ignore `.codex-pitfalls.md`.
 
-Codex should treat the full external wrapper timeout window as expected runtime. With the current defaults, Antigravity advisory runs may stay quiet for up to 20 minutes without that implying failure.
+Codex should treat the full external wrapper timeout window as expected runtime. With the current defaults, advisor runs may stay quiet for up to 20 minutes without that implying failure.
 
 ## Install
 
@@ -102,16 +131,13 @@ Install the skills and append the home-level AGENTS rules under `~/AGENTS.md`:
 ## Development Notes
 
 - `skills/` contains the Codex runtime source of truth.
-- `../common/scripts/` contains the shared Antigravity and Codex CLI runner
-  implementations used across runtimes.
-- `tests/` provides focused coverage for the shared Antigravity runner helpers and the
-  pitfall notebook updater.
+- `../common/scripts/` contains the shared advisor, Antigravity, Grok, and Codex CLI runner implementations used across runtimes.
+- `tests/` provides focused coverage for the shared advisor transports and the pitfall notebook updater.
 - `scripts/install.sh` is the supported way to install or refresh the Codex
   runtime assets locally. It copies `../common/scripts` to
   `~/.codex/skills/shared/scripts` so installed Codex skills remain
   self-contained.
-- The install script writes Antigravity home-level markers and also removes the older
-  Gemini marker block during upgrades.
+- The install script writes advisor home-level markers and removes older Antigravity and Gemini marker blocks during upgrades.
 
 ## Notes
 
