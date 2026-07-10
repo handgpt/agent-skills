@@ -9,6 +9,7 @@ import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,60 @@ class GrokRunnerTests(unittest.TestCase):
 
         self.assertEqual(grok_runner._extract_stream_text(stdout), "hello world")
         self.assertEqual(grok_runner._extract_end_event(stdout)["type"], "end")
+
+    def test_session_completion_probe_ignores_existing_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            updates = Path(tmp_dir) / "updates.jsonl"
+            completed = {
+                "params": {"update": {"sessionUpdate": "turn_completed"}},
+            }
+            updates.write_text(json.dumps(completed) + "\n", encoding="utf-8")
+            probe = grok_runner._SessionCompletionProbe(updates)
+
+            self.assertFalse(probe.poll())
+            with updates.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(completed) + "\n")
+            self.assertTrue(probe.poll())
+
+    def test_session_completion_probe_detects_new_completion_after_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            updates = Path(tmp_dir) / "updates.jsonl"
+            stale = {
+                "params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": "old"}},
+            }
+            current = {
+                "params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": "new"}},
+            }
+            updates.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+            probe = grok_runner._SessionCompletionProbe(updates)
+
+            replacement = updates.with_suffix(".replacement")
+            replacement.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+            replacement.replace(updates)
+            self.assertFalse(probe.poll())
+
+            replacement.write_text(
+                json.dumps(stale) + "\n" + json.dumps(current) + "\n",
+                encoding="utf-8",
+            )
+            replacement.replace(updates)
+
+            self.assertTrue(probe.poll())
+
+    def test_session_updates_path_uses_canonical_cwd_and_custom_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            grok_home = root / "custom-grok-home"
+
+            updates = grok_runner._session_updates_path(
+                root / "missing" / ".." / "project",
+                "session-1",
+                {"GROK_HOME": str(grok_home)},
+            )
+
+            self.assertEqual(updates.parent.name, "session-1")
+            self.assertEqual(updates.parents[1].name, quote(str((root / "project").resolve()), safe=""))
+            self.assertEqual(updates.parents[2], grok_home / "sessions")
 
     def test_build_command_uses_prompt_file_and_bypass_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -150,6 +205,72 @@ class GrokRunnerTests(unittest.TestCase):
                 result = grok_runner.run_grok(
                     "review prompt",
                     20,
+                    root,
+                    output_validator=lambda text: "" if "## Top Findings" in text else "missing heading",
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("## Top Findings", result.stdout)
+
+    def test_run_grok_accepts_session_completion_when_stream_end_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            grok_home = root / "grok-home"
+            fake_cli = root / "fake_grok.py"
+            fake_cli.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import os
+                    import sys
+                    import time
+                    from pathlib import Path
+                    from urllib.parse import quote
+
+                    if "--help" in sys.argv:
+                        print("--cwd --permission-mode --always-approve --no-memory --verbatim --output-format --session-id --prompt-file")
+                        raise SystemExit(0)
+
+                    def option(name):
+                        index = sys.argv.index(name)
+                        return sys.argv[index + 1]
+
+                    session_id = option("--session-id")
+                    cwd = option("--cwd")
+                    updates = (
+                        Path(os.environ["GROK_HOME"])
+                        / "sessions"
+                        / quote(str(Path(cwd).resolve()), safe="")
+                        / session_id
+                        / "updates.jsonl"
+                    )
+                    updates.parent.mkdir(parents=True)
+                    print(json.dumps({"type": "text", "data": "## Top Findings\\n- complete"}), flush=True)
+                    updates.write_text(
+                        json.dumps({"params": {"update": {"sessionUpdate": "turn_completed"}}}) + "\\n",
+                        encoding="utf-8",
+                    )
+                    while True:
+                        time.sleep(1)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_GROK_CMD": str(fake_cli),
+                    "CODEX_GROK_POST_OUTPUT_GRACE": "0.1",
+                    "GROK_HOME": str(grok_home),
+                },
+                clear=False,
+            ):
+                result = grok_runner.run_grok(
+                    "review prompt",
+                    10,
                     root,
                     output_validator=lambda text: "" if "## Top Findings" in text else "missing heading",
                 )
