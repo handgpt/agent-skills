@@ -52,24 +52,72 @@ class GrokRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             updates = Path(tmp_dir) / "updates.jsonl"
             completed = {
-                "params": {"update": {"sessionUpdate": "turn_completed"}},
+                "params": {
+                    "update": {
+                        "sessionUpdate": "turn_completed",
+                        "stop_reason": "end_turn",
+                    }
+                },
             }
-            updates.write_text(json.dumps(completed) + "\n", encoding="utf-8")
+            updates.write_text("审阅中\n" + json.dumps(completed) + "\n", encoding="utf-8")
             probe = grok_runner._SessionCompletionProbe(updates)
 
             self.assertFalse(probe.poll())
             with updates.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(completed) + "\n")
-            self.assertTrue(probe.poll())
+            self.assertEqual(probe.poll().stop_reason, "end_turn")
+
+    def test_session_completion_probe_uses_last_completion_from_single_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            updates = Path(tmp_dir) / "updates.jsonl"
+            updates.touch()
+            probe = grok_runner._SessionCompletionProbe(updates)
+            completions = [
+                {
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "turn_completed",
+                            "prompt_id": "first",
+                            "stop_reason": "end_turn",
+                        }
+                    }
+                },
+                {
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "turn_completed",
+                            "prompt_id": "second",
+                            "stop_reason": "rate_limit",
+                        }
+                    }
+                },
+            ]
+            with updates.open("a", encoding="utf-8") as handle:
+                for completion in completions:
+                    handle.write(json.dumps(completion) + "\n")
+
+            self.assertEqual(probe.poll().stop_reason, "rate_limit")
 
     def test_session_completion_probe_detects_new_completion_after_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             updates = Path(tmp_dir) / "updates.jsonl"
             stale = {
-                "params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": "old"}},
+                "params": {
+                    "update": {
+                        "sessionUpdate": "turn_completed",
+                        "prompt_id": "old",
+                        "stop_reason": "end_turn",
+                    }
+                },
             }
             current = {
-                "params": {"update": {"sessionUpdate": "turn_completed", "prompt_id": "new"}},
+                "params": {
+                    "update": {
+                        "sessionUpdate": "turn_completed",
+                        "prompt_id": "new",
+                        "stop_reason": "rate_limit",
+                    }
+                },
             }
             updates.write_text(json.dumps(stale) + "\n", encoding="utf-8")
             probe = grok_runner._SessionCompletionProbe(updates)
@@ -85,7 +133,7 @@ class GrokRunnerTests(unittest.TestCase):
             )
             replacement.replace(updates)
 
-            self.assertTrue(probe.poll())
+            self.assertEqual(probe.poll().stop_reason, "rate_limit")
 
     def test_session_updates_path_uses_canonical_cwd_and_custom_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -187,7 +235,7 @@ class GrokRunnerTests(unittest.TestCase):
                         print("--cwd --permission-mode --always-approve --no-memory --verbatim --output-format --session-id --prompt-file")
                         raise SystemExit(0)
                     print(json.dumps({"type": "text", "data": "## Top Findings\\n- none"}), flush=True)
-                    print(json.dumps({"type": "end", "session_id": "abc"}), flush=True)
+                    print(json.dumps({"type": "end", "stopReason": "EndTurn", "session_id": "abc"}), flush=True)
                     """
                 ),
                 encoding="utf-8",
@@ -248,7 +296,7 @@ class GrokRunnerTests(unittest.TestCase):
                     updates.parent.mkdir(parents=True)
                     print(json.dumps({"type": "text", "data": "## Top Findings\\n- complete"}), flush=True)
                     updates.write_text(
-                        json.dumps({"params": {"update": {"sessionUpdate": "turn_completed"}}}) + "\\n",
+                        json.dumps({"params": {"update": {"sessionUpdate": "turn_completed", "stop_reason": "end_turn"}}}) + "\\n",
                         encoding="utf-8",
                     )
                     while True:
@@ -277,6 +325,80 @@ class GrokRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("## Top Findings", result.stdout)
+
+    def test_run_grok_preserves_rate_limit_diagnostics_over_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            grok_home = root / "grok-home"
+            fake_cli = root / "fake_grok.py"
+            fake_cli.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import os
+                    import sys
+                    import time
+                    from pathlib import Path
+                    from urllib.parse import quote
+
+                    if "--help" in sys.argv:
+                        print("--cwd --permission-mode --always-approve --no-memory --verbatim --output-format --session-id --prompt-file")
+                        raise SystemExit(0)
+
+                    def option(name):
+                        index = sys.argv.index(name)
+                        return sys.argv[index + 1]
+
+                    session_id = option("--session-id")
+                    cwd = option("--cwd")
+                    updates = (
+                        Path(os.environ["GROK_HOME"])
+                        / "sessions"
+                        / quote(str(Path(cwd).resolve()), safe="")
+                        / session_id
+                        / "updates.jsonl"
+                    )
+                    updates.parent.mkdir(parents=True)
+                    print(json.dumps({"type": "text", "data": "I'll inspect the workspace first."}), flush=True)
+                    print(
+                        "API error (status 429 Too Many Requests): subscription:free-usage-exhausted",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    updates.write_text(
+                        json.dumps({"params": {"update": {"sessionUpdate": "turn_completed", "stop_reason": "rate_limit"}}}) + "\\n",
+                        encoding="utf-8",
+                    )
+                    while True:
+                        time.sleep(1)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_GROK_CMD": str(fake_cli),
+                    "CODEX_GROK_POST_OUTPUT_GRACE": "0.1",
+                    "GROK_HOME": str(grok_home),
+                },
+                clear=False,
+            ):
+                result = grok_runner.run_grok(
+                    "review prompt",
+                    10,
+                    root,
+                    output_validator=lambda _text: "meta chatter instead of findings",
+                )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("I'll inspect", result.stdout)
+        self.assertIn("429 Too Many Requests", result.stderr)
+        self.assertIn("stop_reason=rate_limit", result.stderr)
+        self.assertIn("meta chatter instead of findings", result.stderr)
 
     def test_probe_help_falls_back_to_default_support_on_help_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

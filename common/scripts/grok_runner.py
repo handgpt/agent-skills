@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -301,18 +302,38 @@ def _session_updates_path(project_root: Path, session_id: str, env: dict[str, st
     return grok_home / "sessions" / encoded_cwd / session_id / "updates.jsonl"
 
 
-def _turn_completed_signature(line: str) -> str:
+def _normalize_stop_reason(value: object) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
+    return text.replace("-", "_").replace(" ", "_").lower()
+
+
+@dataclass(frozen=True)
+class _SessionCompletion:
+    signature: str
+    stop_reason: str
+
+    @property
+    def successful(self) -> bool:
+        return self.stop_reason == "end_turn"
+
+
+def _turn_completion(line: str) -> _SessionCompletion | None:
     try:
         event = json.loads(line)
     except json.JSONDecodeError:
-        return ""
+        return None
     if not isinstance(event, dict):
-        return ""
+        return None
     params = event.get("params")
     update = params.get("update") if isinstance(params, dict) else None
     if not isinstance(update, dict) or update.get("sessionUpdate") != "turn_completed":
-        return ""
-    return json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return None
+    stop_reason = _normalize_stop_reason(update.get("stop_reason") or update.get("stopReason"))
+    return _SessionCompletion(
+        signature=json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+        stop_reason=stop_reason or "unknown",
+    )
 
 
 class _SessionCompletionProbe:
@@ -323,7 +344,7 @@ class _SessionCompletionProbe:
         self._offset = 0
         self._identity: tuple[int, int] | None = None
         self._known_completions: set[str] = set()
-        self._partial = ""
+        self._partial = b""
         try:
             stat = path.stat()
         except OSError:
@@ -331,61 +352,69 @@ class _SessionCompletionProbe:
         self._offset = stat.st_size
         self._identity = (stat.st_dev, stat.st_ino)
         try:
-            existing = path.read_text(encoding="utf-8", errors="replace")
+            existing = path.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             return
         self._known_completions = {
-            signature
+            completion.signature
             for line in existing.splitlines()
-            if (signature := _turn_completed_signature(line))
+            if (completion := _turn_completion(line))
         }
 
-    def poll(self) -> bool:
+    def poll(self) -> _SessionCompletion | None:
         try:
             stat = self.path.stat()
         except OSError:
-            return False
+            return None
 
         identity = (stat.st_dev, stat.st_ino)
         if self._identity is None:
             self._identity = identity
         elif identity != self._identity or stat.st_size < self._offset:
             self._identity = identity
-            self._partial = ""
+            self._partial = b""
             try:
-                replaced = self.path.read_text(encoding="utf-8", errors="replace")
+                replaced = self.path.read_bytes().decode("utf-8", errors="replace")
             except OSError:
-                return False
+                return None
             self._offset = stat.st_size
-            current_completions = {
-                signature
+            current_completions = [
+                completion
                 for line in replaced.splitlines()
-                if (signature := _turn_completed_signature(line))
+                if (completion := _turn_completion(line))
+            ]
+            new_completions = [
+                completion
+                for completion in current_completions
+                if completion.signature not in self._known_completions
+            ]
+            self._known_completions = {
+                completion.signature for completion in current_completions
             }
-            new_completion = bool(current_completions - self._known_completions)
-            self._known_completions = current_completions
-            return new_completion
+            return new_completions[-1] if new_completions else None
 
         if stat.st_size <= self._offset:
-            return False
+            return None
 
         try:
-            with self.path.open("r", encoding="utf-8", errors="replace") as handle:
+            with self.path.open("rb") as handle:
                 handle.seek(self._offset)
                 appended = handle.read()
                 self._offset = handle.tell()
         except OSError:
-            return False
+            return None
 
         lines = (self._partial + appended).splitlines(keepends=True)
-        self._partial = ""
-        if lines and not lines[-1].endswith(("\n", "\r")):
+        self._partial = b""
+        if lines and not lines[-1].endswith((b"\n", b"\r")):
             self._partial = lines.pop()
 
-        for line in lines:
-            if _turn_completed_signature(line):
-                return True
-        return False
+        completions = [
+            completion
+            for line in lines
+            if (completion := _turn_completion(line.decode("utf-8", errors="replace")))
+        ]
+        return completions[-1] if completions else None
 
 
 def _tail_diagnostics(stdout: str, stderr: str) -> str:
@@ -420,8 +449,8 @@ def _stream_process(
     timeout_seconds: int,
     env: dict[str, str],
     post_output_grace_seconds: float,
-    session_completion_probe: Callable[[], bool] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], bool, int, bool]:
+    session_completion_probe: Callable[[], _SessionCompletion | None] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], bool, int, _SessionCompletion | None]:
     process = subprocess.Popen(
         args,
         cwd=str(cwd),
@@ -445,8 +474,7 @@ def _stream_process(
     last_progress = start_mono
     last_stdout_activity = start_mono
     completion_event_seen = False
-    session_completion_seen = False
-    output_text_seen = False
+    session_completion: _SessionCompletion | None = None
     stdout_done = False
     stderr_done = False
     terminated_after_output = False
@@ -474,22 +502,21 @@ def _stream_process(
                 stdout_parts.append(line)
                 last_stdout_activity = now
                 event = _parse_json_line(line)
-                if event is None:
-                    output_text_seen = output_text_seen or bool(_strip_ansi(line).strip())
-                else:
-                    event_type = str(event.get("type") or "").strip().lower()
-                    if event_type in OUTPUT_EVENT_TYPES and _event_text(event).strip():
-                        output_text_seen = True
-                    if _is_end_event(event):
-                        completion_event_seen = True
+                if event is not None and _is_end_event(event):
+                    completion_event_seen = True
             elif source == "stderr":
                 stderr_parts.append(line)
 
-        if not session_completion_seen and session_completion_probe is not None:
+        if session_completion is None and session_completion_probe is not None:
             try:
-                session_completion_seen = bool(session_completion_probe())
+                session_completion = session_completion_probe()
             except OSError:
-                session_completion_seen = False
+                session_completion = None
+            if session_completion is not None:
+                _emit_progress(
+                    "[Grok completion]",
+                    f"stop_reason={session_completion.stop_reason}",
+                )
 
         if now - last_progress >= GROK_PROGRESS_INTERVAL_SECONDS:
             current_text = _extract_stream_text("".join(stdout_parts))
@@ -503,18 +530,20 @@ def _stream_process(
             last_progress = now
 
         if (
-            (completion_event_seen or (session_completion_seen and output_text_seen))
+            (completion_event_seen or session_completion is not None)
             and post_output_grace_seconds > 0
             and now - last_stdout_activity >= post_output_grace_seconds
             and process.poll() is None
         ):
             terminated_after_output = True
+            completion_label = (
+                "stream end"
+                if completion_event_seen
+                else f"session completion ({session_completion.stop_reason})"
+            )
             _emit_progress(
                 "[Grok background]",
-                (
-                    f"terminating cleanup {now - last_stdout_activity:.1f}s after "
-                    f"{'stream end' if completion_event_seen else 'session completion'}"
-                ),
+                f"terminating cleanup {now - last_stdout_activity:.1f}s after {completion_label}",
             )
             _terminate_process(process)
 
@@ -539,7 +568,7 @@ def _stream_process(
         ),
         terminated_after_output,
         process_returncode,
-        session_completion_seen,
+        session_completion,
     )
 
 
@@ -679,7 +708,7 @@ def run_grok(
         _emit_progress("[Grok mode]", "headless")
         _emit_progress("[Grok cwd]", project_root)
         _emit_progress("[Grok session]", session_id)
-        proc, terminated_after_output, process_returncode, session_completion_seen = _stream_process(
+        proc, terminated_after_output, _process_returncode, session_completion = _stream_process(
             command,
             cwd=project_root,
             timeout_seconds=timeout_seconds,
@@ -694,23 +723,36 @@ def run_grok(
     streaming_json = _is_streaming_json_format(output_format)
     output_text = _extract_stream_text(proc.stdout, allow_fallback=not streaming_json).strip()
     end_event = _extract_end_event(proc.stdout)
-    completion_signal_seen = bool(end_event) or session_completion_seen
+    end_stop_reason = _normalize_stop_reason(
+        end_event.get("stopReason") or end_event.get("stop_reason")
+    )
+    end_successful = bool(end_event) and end_stop_reason == "end_turn"
+    session_successful = bool(session_completion and session_completion.successful)
+    completion_signal_seen = bool(end_event) or session_completion is not None
+    successful_completion_seen = end_successful or session_successful
+    completion_failure_reason = ""
+    if session_completion is not None and not session_completion.successful:
+        completion_failure_reason = session_completion.stop_reason
+    elif end_event and not end_successful:
+        completion_failure_reason = end_stop_reason or "unknown"
     diagnostics = _tail_diagnostics(proc.stdout, proc.stderr)
-    cleanup_after_completion = bool(terminated_after_output and completion_signal_seen)
+    cleanup_after_completion = bool(terminated_after_output and successful_completion_seen)
     missing_completion_signal = bool(
         streaming_json and int(proc.returncode) == 0 and output_text and not completion_signal_seen
     )
     effective_returncode = 0 if cleanup_after_completion else int(proc.returncode)
+    if completion_failure_reason:
+        effective_returncode = 1
+        diagnostics = "\n".join(
+            part
+            for part in (
+                diagnostics,
+                f"Grok CLI session ended with stop_reason={completion_failure_reason}.",
+            )
+            if part
+        )
     if missing_completion_signal or (effective_returncode == 0 and not output_text):
         effective_returncode = 1
-    text = output_text if output_text else diagnostics
-
-    normalized_stdout = output_normalizer(text) if output_normalizer else text
-    validation_error = output_validator(normalized_stdout) if output_validator and normalized_stdout else ""
-    if validation_error:
-        return subprocess.CompletedProcess(command, 1, "", validation_error)
-    if effective_returncode == 0 and normalized_stdout:
-        return subprocess.CompletedProcess(command, 0, normalized_stdout, proc.stderr)
 
     if missing_completion_signal:
         diagnostics = "\n".join(
@@ -721,6 +763,19 @@ def run_grok(
             )
             if part
         )
-    if terminated_after_output and not cleanup_after_completion:
-        diagnostics = "\n".join(part for part in (diagnostics, f"Grok CLI stalled; process_returncode={process_returncode}.") if part)
-    return subprocess.CompletedProcess(command, effective_returncode, text, diagnostics)
+    normalized_stdout = output_normalizer(output_text) if output_normalizer else output_text
+    validation_error = output_validator(normalized_stdout) if output_validator else ""
+    if effective_returncode != 0:
+        if validation_error:
+            diagnostics = "\n".join(
+                part
+                for part in (
+                    diagnostics,
+                    f"Grok advisory output validation failed: {validation_error}",
+                )
+                if part
+            )
+        return subprocess.CompletedProcess(command, effective_returncode, output_text, diagnostics)
+    if validation_error:
+        return subprocess.CompletedProcess(command, 1, "", validation_error)
+    return subprocess.CompletedProcess(command, 0, normalized_stdout, proc.stderr)
