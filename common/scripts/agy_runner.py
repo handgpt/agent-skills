@@ -27,9 +27,10 @@ except ImportError:  # pragma: no cover - platform dependent
 
 
 DEFAULT_TIMEOUT_SECONDS = 1200
-DEFAULT_AGY_MODEL = "Gemini 3.5 Flash (High)"
+DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
 DEFAULT_AGY_AUTH_RETRIES = 5
 SUPPORTED_AGY_MODELS = (
+    "Gemini 3.7 Flash (High)",
     "Gemini 3.5 Flash (High)",
     "Gemini 3.1 Pro (High)",
     "Claude Sonnet 4.6 (Thinking)",

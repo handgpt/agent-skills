@@ -41,13 +41,13 @@ python3 scripts/run_advisor_error_analysis.py \
 
 The wrapper defaults to Antigravity CLI. Select a provider with `CODEX_ADVISOR_PROVIDER=agy|grok`, `--provider agy|grok`, or `"provider": "agy"` in `~/.codex/advisor_cli.json`.
 
-Antigravity launches with the configured prompt mode and model. Default is interactive prompt mode, `agy -i "<prompt>"`, with `--model "Gemini 3.5 Flash (High)"` when supported. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. Override the model with `CODEX_AGY_MODEL` or config `"model"`; supported values are `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
+Antigravity launches with the configured prompt mode and model. Default is interactive prompt mode, `agy -i "<prompt>"`, with `--model "Gemini 3.7 Flash (High)"` when supported. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. Override the model with `CODEX_AGY_MODEL` or config `"model"`; supported values are `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 
 Grok launches through `grok --prompt-file ... --output-format streaming-json` with `--permission-mode bypassPermissions` by default. Configure it with `~/.codex/grok_cli.json` or environment variables such as `CODEX_GROK_CMD`, `CODEX_GROK_CONFIG`, `CODEX_GROK_MODEL`, `CODEX_GROK_EFFORT`, and `CODEX_GROK_PERMISSION_MODE`.
 
 If `agy` reports `E... not logged into Antigravity`, the wrapper prints the matching `W...` and `E...` log lines and relaunches `agy` up to 5 times by default. If the skill command still exits with a login failure after those internal retries, rerun the same command with the same brief and context files until reaching 10 total skill-command attempts before treating the advisor as unavailable.
 
-This skill has been smoke-tested with Antigravity CLI `agy` version `1.0.7`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
+This skill has been smoke-tested with Antigravity CLI `agy` version `1.1.13`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
 
 Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is no longer supported. Migrate any old `$gemini-error-analysis` workflow to `$advisor-error-analysis`.
 

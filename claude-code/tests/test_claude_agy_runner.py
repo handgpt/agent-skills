@@ -49,6 +49,10 @@ agy_runner = _load_runner_module()
 
 
 class ClaudeAgyRunnerTests(unittest.TestCase):
+    def test_default_model_is_gemini_3_7_flash_high(self) -> None:
+        self.assertEqual(agy_runner.DEFAULT_AGY_MODEL, "Gemini 3.7 Flash (High)")
+        self.assertIn(agy_runner.DEFAULT_AGY_MODEL, agy_runner.SUPPORTED_AGY_MODELS)
+
     def test_build_command_adds_default_model_and_workspace_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -78,7 +82,7 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
 
         self.assertEqual(command[0], "agy")
         self.assertNotIn("old-model", command)
-        self.assertEqual(command[command.index("--model") + 1], "Gemini 3.5 Flash (High)")
+        self.assertEqual(command[command.index("--model") + 1], agy_runner.DEFAULT_AGY_MODEL)
         self.assertEqual(command[command.index("--add-dir") + 1], str(extra_dir.resolve()))
         self.assertIn("--dangerously-skip-permissions", command)
         self.assertIn("--print-timeout", command)

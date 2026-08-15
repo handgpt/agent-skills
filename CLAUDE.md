@@ -69,5 +69,5 @@ The following Codex advisory skills can be used automatically without explicit u
 - Always set `--project-root` to the specific subdirectory being reviewed, not the workspace root, to prevent agents from browsing unrelated sibling directories.
 - Always verify advisory findings against the actual code (grep, read) before acting on them. External agents can hallucinate or misattribute code from other directories.
 - Add explicit scoping instructions in the review brief (e.g., "Only review files under X. Do NOT inspect Y.").
-- Default Antigravity model is `Gemini 3.5 Flash (High)` with 20-minute wrapper timeout.
+- Default Antigravity model is `Gemini 3.7 Flash (High)` with 20-minute wrapper timeout.
 - Default Codex model is `gpt-5.4` with 1-hour timeout.
