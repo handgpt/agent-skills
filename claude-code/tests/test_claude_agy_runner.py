@@ -49,9 +49,11 @@ agy_runner = _load_runner_module()
 
 
 class ClaudeAgyRunnerTests(unittest.TestCase):
-    def test_default_model_is_gemini_3_7_flash_high(self) -> None:
-        self.assertEqual(agy_runner.DEFAULT_AGY_MODEL, "Gemini 3.7 Flash (High)")
+    def test_default_model_is_gemini_3_8_flash_high(self) -> None:
+        self.assertEqual(agy_runner.DEFAULT_AGY_MODEL, "Gemini 3.8 Flash (High)")
         self.assertIn(agy_runner.DEFAULT_AGY_MODEL, agy_runner.SUPPORTED_AGY_MODELS)
+        with patch.dict(os.environ, {"CLAUDE_AGY_MODEL": ""}):
+            self.assertEqual(agy_runner._configured_agy_model({}), "Gemini 3.8 Flash (High)")
 
     def test_build_command_adds_default_model_and_workspace_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

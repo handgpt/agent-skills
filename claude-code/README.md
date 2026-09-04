@@ -82,7 +82,7 @@ All configuration is optional. The defaults work out of the box.
 | `CLAUDE_AGY_CMD` | `agy` | Antigravity CLI command or wrapper |
 | `CLAUDE_AGY_MODE` | `print` | Antigravity prompt mode: `print` for `agy -p`, `interactive` for `agy -i` |
 | `CLAUDE_AGY_CONFIG` | `~/.claude/agy_cli.json` | Optional Antigravity CLI config JSON path |
-| `CLAUDE_AGY_MODEL` | `Gemini 3.7 Flash (High)` | Antigravity model passed through `--model` when supported. Supported: `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, `Claude Opus 4.6 (Thinking)` |
+| `CLAUDE_AGY_MODEL` | `Gemini 3.8 Flash (High)` | Antigravity model passed through `--model` when supported. Supported: `Gemini 3.8 Flash (High)`, `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, `Claude Opus 4.6 (Thinking)` |
 | `CLAUDE_AGY_PRINT_TIMEOUT` | `1200s` | Antigravity print-mode timeout passed to `agy` when supported |
 | `CLAUDE_AGY_AUTH_RETRIES` | `5` | Relaunch count for transient `E... not logged into Antigravity` CLI log failures |
 | `CLAUDE_AGY_DANGEROUSLY_SKIP_PERMISSIONS` | `true` | Auto-approve Antigravity CLI tool permissions when supported |
@@ -153,7 +153,7 @@ that locate those common runners.
 - **Configurable Antigravity prompt mode.** Antigravity advisory passes default
   to `agy -p`, can switch to `agy -i` with `CLAUDE_AGY_MODE=interactive` or
   `"mode": "interactive"` in `~/.claude/agy_cli.json`, pass
-  `--model "Gemini 3.7 Flash (High)"` by default when supported, and pass
+  `--model "Gemini 3.8 Flash (High)"` by default when supported, and pass
   extra multi-project roots through repeatable `--add-dir` flags. Transient
   `E... not logged into Antigravity` failures are relaunched up to 5 times by
   default, with matching `W...` and `E...` log lines printed for diagnosis.

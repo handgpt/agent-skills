@@ -50,7 +50,7 @@ class AdvisorReviewPromptTests(unittest.TestCase):
         self.assertIn("CODEX_ADVISOR_PROVIDER=agy|grok", skill_text)
         self.assertIn("agy -i", skill_text)
         self.assertIn("grok --prompt-file", skill_text)
-        self.assertIn('`--model "Gemini 3.7 Flash (High)"`', skill_text)
+        self.assertIn('`--model "Gemini 3.8 Flash (High)"`', skill_text)
         self.assertIn("Claude Opus 4.6 (Thinking)", skill_text)
         self.assertIn("priority starting hints", skill_text)
         self.assertIn("$advisor-review", agent_text)

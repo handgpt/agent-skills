@@ -169,9 +169,11 @@ class AgyRunnerTests(unittest.TestCase):
     def test_default_mode_is_interactive(self) -> None:
         self.assertEqual(agy_runner.DEFAULT_MODE, "interactive")
 
-    def test_default_model_is_gemini_3_7_flash_high(self) -> None:
-        self.assertEqual(agy_runner.DEFAULT_AGY_MODEL, "Gemini 3.7 Flash (High)")
+    def test_default_model_is_gemini_3_8_flash_high(self) -> None:
+        self.assertEqual(agy_runner.DEFAULT_AGY_MODEL, "Gemini 3.8 Flash (High)")
         self.assertIn(agy_runner.DEFAULT_AGY_MODEL, agy_runner.SUPPORTED_AGY_MODELS)
+        with patch.dict(os.environ, {"CODEX_AGY_MODEL": ""}):
+            self.assertEqual(agy_runner._configured_agy_model({}), "Gemini 3.8 Flash (High)")
 
     def test_mode_can_be_loaded_from_config_or_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -219,9 +221,13 @@ class AgyRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported Antigravity model"):
                 agy_runner._configured_agy_model({})
 
-    def test_configured_model_keeps_gemini_3_5_flash_high_override(self) -> None:
-        with patch.dict(os.environ, {"CODEX_AGY_MODEL": "Gemini 3.5 Flash (High)"}):
-            self.assertEqual(agy_runner._configured_agy_model({}), "Gemini 3.5 Flash (High)")
+    def test_configured_model_keeps_previous_flash_high_overrides(self) -> None:
+        for model in ("Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"):
+            with self.subTest(model=model):
+                with patch.dict(os.environ, {"CODEX_AGY_MODEL": ""}):
+                    self.assertEqual(agy_runner._configured_agy_model({"model": model}), model)
+                with patch.dict(os.environ, {"CODEX_AGY_MODEL": model}):
+                    self.assertEqual(agy_runner._configured_agy_model({}), model)
 
     def test_configure_platform_refreshes_derived_globals(self) -> None:
         try:

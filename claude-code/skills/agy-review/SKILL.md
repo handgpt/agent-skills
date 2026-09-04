@@ -38,7 +38,7 @@ python3 $AGENT_SKILLS_DIR/claude-code/skills/agy-review/scripts/run_agy_review.p
 
 The runner defaults to `agy -p "<prompt>"` print mode and can use `agy -i "<prompt>"` when `CLAUDE_AGY_MODE=interactive` or `"mode": "interactive"` is set in `~/.claude/agy_cli.json`. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
 
-When supported by `agy`, the runner passes `--model "Gemini 3.7 Flash (High)"` by default. Override with `CLAUDE_AGY_MODEL` or config `"model"`. Supported values are `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
+When supported by `agy`, the runner passes `--model "Gemini 3.8 Flash (High)"` by default. Override with `CLAUDE_AGY_MODEL` or config `"model"`. Supported values are `Gemini 3.8 Flash (High)`, `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
 
 For multi-project advisory scopes, the runner passes extra project roots through repeatable `--add-dir` flags when supported by `agy`.
 

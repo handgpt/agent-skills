@@ -1,7 +1,7 @@
 ## Advisor checkpoints
 
 - External advisory skills are provider-routed through `$advisor-design-checkpoint`, `$advisor-error-analysis`, and `$advisor-review`. The default provider is Antigravity CLI (`agy`); set `CODEX_ADVISOR_PROVIDER=grok`, pass `--provider grok`, or set `"provider": "grok"` in `~/.codex/advisor_cli.json` to use Grok CLI.
-- Antigravity remains the default provider. The skills pass `--model "Gemini 3.7 Flash (High)"` by default when the installed `agy` supports `--model`; supported overrides are `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
+- Antigravity remains the default provider. The skills pass `--model "Gemini 3.8 Flash (High)"` by default when the installed `agy` supports `--model`; supported overrides are `Gemini 3.8 Flash (High)`, `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
 - Antigravity advisory mode defaults to `agy -i` prompt-interactive mode. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p` print mode.
 - Grok provider uses `grok --prompt-file ... --output-format streaming-json` with `--permission-mode bypassPermissions` by default. Configure it with `~/.codex/grok_cli.json` or `CODEX_GROK_CMD`, `CODEX_GROK_CONFIG`, `CODEX_GROK_MODEL`, `CODEX_GROK_EFFORT`, and `CODEX_GROK_PERMISSION_MODE`.
 - When an advisory pass intentionally spans multiple project roots, the wrapper runs from the common workspace ancestor and lists every project explicitly in the prompt. Providers may receive additional project roots through provider-specific mechanisms when supported.

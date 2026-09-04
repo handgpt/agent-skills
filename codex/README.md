@@ -43,7 +43,7 @@ agent-skills/codex/
 
 The advisor skills are advisory only. They do not modify files and they are designed to fail open: if the selected provider is unavailable or times out, Codex continues normally.
 
-Antigravity CLI (`agy`) is the default Codex external advisory provider. The skills pass `--model "Gemini 3.7 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
+Antigravity CLI (`agy`) is the default Codex external advisory provider. The skills pass `--model "Gemini 3.8 Flash (High)"` by default when the installed `agy` exposes `--model`. The currently supported override values are `Gemini 3.8 Flash (High)`, `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`.
 
 Grok CLI is available as an optional provider. Select it with `CODEX_ADVISOR_PROVIDER=grok`, `--provider grok`, or `"provider": "grok"` in `~/.codex/advisor_cli.json`. The Grok transport uses `grok --prompt-file ... --output-format streaming-json` and defaults to `--permission-mode bypassPermissions`.
 
@@ -75,7 +75,7 @@ Use `~/.codex/agy_cli.json` to switch Antigravity modes or models:
 {
   "mode": "interactive",
   "command": "agy",
-  "model": "Gemini 3.7 Flash (High)",
+  "model": "Gemini 3.8 Flash (High)",
   "print_timeout": "1200s",
   "auth_retries": 5,
   "dangerously_skip_permissions": true
