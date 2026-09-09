@@ -11,7 +11,7 @@ This skill is not advisory-only: it intentionally updates a local memory file in
 
 ## Notebook Location
 
-- Default notebook path: project root `/.codex-pitfalls.md`
+- Default notebook path: `.codex-pitfalls.md` inside the project root (not the filesystem root).
 - Recommended: if the project uses Git and this notebook is personal agent memory rather than team knowledge, add `.codex-pitfalls.md` to `.gitignore`
 
 ## When To Read It
@@ -55,7 +55,8 @@ The script auto-detects the current project root, writes to `.codex-pitfalls.md`
 
 - Treat the notebook as a pre-flight checklist, not as a full design history.
 - Read it before non-trivial implementation or review work when it exists.
-- Apply the `Rule` lines first. They are the core "do not repeat this" memory.
+- Treat past rules as historical evidence. Check the affected component, version, and current facts before applying one; current user instructions and verified project requirements take precedence.
+- Reuse a notebook already read in the same task unless it changed or the relevant scope changed.
 - Keep entries concrete. If an entry cannot explain the pitfall in a few short bullets, it is probably too broad.
 
 ## Guardrails

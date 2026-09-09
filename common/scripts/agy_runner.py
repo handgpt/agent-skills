@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - platform dependent
 
 DEFAULT_TIMEOUT_SECONDS = 1200
 DEFAULT_AGY_MODEL = "Gemini 3.8 Flash (High)"
-DEFAULT_AGY_AUTH_RETRIES = 5
+DEFAULT_AGY_AUTH_RETRIES = 0
 SUPPORTED_AGY_MODELS = (
     "Gemini 3.8 Flash (High)",
     "Gemini 3.7 Flash (High)",
@@ -98,6 +98,7 @@ class AgyPlatformConfig:
     default_mode: str
     default_config_path: str
     enable_output_file: bool = False
+    default_auth_retries: int = 0
 
 
 CODEX_AGY_PLATFORM = AgyPlatformConfig(
@@ -114,6 +115,7 @@ CLAUDE_CODE_AGY_PLATFORM = AgyPlatformConfig(
     default_mode="print",
     default_config_path="~/.claude/agy_cli.json",
     enable_output_file=True,
+    default_auth_retries=5,
 )
 
 _PLATFORM = CODEX_AGY_PLATFORM
@@ -133,12 +135,13 @@ ENABLE_OUTPUT_FILE_ARGUMENT = _PLATFORM.enable_output_file
 def configure_platform(config: AgyPlatformConfig) -> None:
     """Configure platform-specific defaults for the current runner process."""
     global _PLATFORM
-    global DEFAULT_MODE, DEFAULT_CONFIG_PATH, AGY_HOME_ENV_VAR
+    global DEFAULT_MODE, DEFAULT_CONFIG_PATH, AGY_HOME_ENV_VAR, DEFAULT_AGY_AUTH_RETRIES
     global AGY_CMD_ENV_VAR, AGY_MODE_ENV_VAR, AGY_CONFIG_ENV_VAR, AGY_MODEL_ENV_VAR
     global AGY_PRINT_TIMEOUT_ENV_VAR, AGY_AUTH_RETRIES_ENV_VAR
     global AGY_DANGEROUS_SKIP_ENV_VAR, ENABLE_OUTPUT_FILE_ARGUMENT
 
     _PLATFORM = config
+    DEFAULT_AGY_AUTH_RETRIES = config.default_auth_retries
     DEFAULT_MODE = config.default_mode
     DEFAULT_CONFIG_PATH = config.default_config_path
     AGY_HOME_ENV_VAR = config.home_env_var
@@ -1485,14 +1488,20 @@ def run_agy(
         )
     base_args[0] = resolved_exe
 
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    # One execution budget covers startup probing and all opt-in auth retries.
+    deadline = time.monotonic() + timeout_seconds
     help_text = _probe_help(base_args, project_root, env_overrides)
-    print_timeout = _config_text(
-        config, "print_timeout", AGY_PRINT_TIMEOUT_ENV_VAR, _duration_text(timeout_seconds)
-    )
+    print_timeout_override = _config_text(config, "print_timeout", AGY_PRINT_TIMEOUT_ENV_VAR)
     env = _agy_environment(env_overrides)
     last_result: subprocess.CompletedProcess[str] | None = None
 
     for attempt_index in range(auth_retries + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(base_args, timeout_seconds,
+                                            stderr=last_result.stderr if last_result else None)
         start_dt = datetime.now()
         start_epoch = time.time()
         log_path = _agy_log_file(start_dt)
@@ -1500,7 +1509,7 @@ def run_agy(
             base_args,
             help_text=help_text,
             prompt=prompt_text,
-            print_timeout=print_timeout,
+            print_timeout=print_timeout_override or _duration_text(remaining),
             log_file=str(log_path),
             model=model,
             add_dirs=add_dirs,
@@ -1513,7 +1522,7 @@ def run_agy(
                 command,
                 cwd=project_root,
                 env=env,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=remaining,
                 start_dt=start_dt,
                 start_epoch=start_epoch,
                 prompt_text=prompt_text,
@@ -1523,7 +1532,7 @@ def run_agy(
                 command,
                 cwd=project_root,
                 env=env,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=remaining,
                 start_dt=start_dt,
                 start_epoch=start_epoch,
                 prompt_text=prompt_text,

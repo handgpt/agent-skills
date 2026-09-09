@@ -389,6 +389,55 @@ class AgyRunnerTests(unittest.TestCase):
             self.assertEqual(agy_runner._log_login_failure(log_path), "")
             self.assertEqual(agy_runner._log_auth_failure(log_path), "")
 
+    def test_codex_login_failure_does_not_retry_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="-i"),
+                patch.object(agy_runner, "_agy_log_file", return_value=root / "missing.log"),
+                patch.object(agy_runner, "_run_interactive", return_value=subprocess.CompletedProcess([], 1, "", "auth failed")) as launch,
+                patch.object(agy_runner, "_is_login_failure_result", return_value=True),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                result = agy_runner.run_agy("prompt", 10, root, config_path=root / "missing.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(launch.call_count, 1)
+
+    def test_opt_in_retries_share_remaining_execution_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="--print-timeout"),
+                patch.object(agy_runner, "_agy_log_file", return_value=root / "missing.log"),
+                patch.object(agy_runner, "_run_print", side_effect=[subprocess.CompletedProcess([], 1, "", "auth failed"), subprocess.CompletedProcess([], 0, "review", "")]) as launch,
+                patch.object(agy_runner, "_is_login_failure_result", side_effect=[True, False]),
+                patch.object(agy_runner.time, "monotonic", side_effect=[100, 101, 107]),
+                patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "2"}, clear=True),
+            ):
+                result = agy_runner.run_agy("prompt", 10, root, mode="print", config_path=root / "missing.json")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual([c.kwargs["timeout_seconds"] for c in launch.call_args_list], [9, 3])
+        command = launch.call_args_list[1].args[0]
+        self.assertEqual(command[command.index("--print-timeout") + 1], "3s")
+
+    def test_exhausted_budget_does_not_launch_another_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="-i"),
+                patch.object(agy_runner, "_agy_log_file", return_value=root / "missing.log"),
+                patch.object(agy_runner, "_run_interactive", return_value=subprocess.CompletedProcess([], 1, "", "auth failed")) as launch,
+                patch.object(agy_runner, "_is_login_failure_result", return_value=True),
+                patch.object(agy_runner.time, "monotonic", side_effect=[100, 101, 111]),
+                patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "5"}, clear=True),
+            ):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    agy_runner.run_agy("prompt", 10, root, config_path=root / "missing.json")
+        self.assertEqual(launch.call_count, 1)
+
     def test_run_agy_retries_not_logged_in_log_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

@@ -1,25 +1,26 @@
 ---
 name: advisor-review
-description: Advisory external review for completed code changes or finished artifacts. Use when Codex wants a concise second opinion focused on bugs, regressions, missing tests, risky assumptions, overlooked edge cases, unused code, over-complicated implementations, structural risks, or artifact quality before the final response. Default provider is Antigravity CLI; Grok CLI can be selected by configuration. Use only after meaningful code or artifact changes. Do not use for design-only conversations, trivial edits, or when nothing substantive changed.
+description: "Review existing code or artifacts when explicitly requested, including audits without a diff. Automatically review completed high-risk changes for bugs, regressions, structural risks, and missing validation. Skip automatic review for ordinary low-risk edits. Default provider: Antigravity CLI; Grok optional."
 ---
 
 # Advisor Review
 
-Get a bounded external advisor review after code or artifact changes are complete. Treat the output as a second opinion only: the advisor must not edit files, apply patches, or become the final decision-maker.
+Get a bounded external advisor review of completed changes or an explicitly requested audit of existing work. Treat the output as a second opinion only: the advisor must not edit files, apply patches, or become the final decision-maker.
 
 ## Decide Whether To Use It
 
-- Use this skill after non-trivial code changes and before the final answer.
+- Honor explicit requests for advisor review, including read-only audits with no diff.
+- Automatically review completed changes affecting core/shared modules, public interfaces, dependencies, security boundaries, migrations, or cross-module behavior. For ordinary local changes, complete appropriate validation and use an advisor only when an unresolved risk warrants it.
 - Use this skill for finished artifacts such as articles, docs, specs, and prompts when a general design checkpoint is the wrong shape.
-- Skip it when no code changed, when only tiny low-risk edits were made, or when the user only asked for analysis.
-- Run it once per finished change set. Do not call it during every implementation step.
+- Skip automatic invocation for low-risk edits and analysis-only work; this heuristic never suppresses an explicit review request.
+- Run once per completed change set or requested audit. Do not repeat after addressing findings unless a new material risk remains.
 - Use `--mode structural` at important checkpoints: shared or core modules, public interfaces, dependency wiring, top-level configuration, cross-module changes, or any edit that can change module boundaries and ownership.
 - Use `--focus article`, `--focus doc`, `--focus spec`, `--focus prompt`, or `--focus general` for non-code artifacts.
 - When `--mode structural` is combined with a non-code focus, the review checks artifact structure, argument flow, evidence dependencies, terminology, and audience fit rather than code module boundaries.
 
 ## Prepare A Review Brief
 
-Create a short review brief in `/tmp` or another scratch path with:
+Create a short review brief in `/tmp` or another scratch path. For an existing-work audit, identify scope and baseline and mark diff fields not applicable. Include:
 
 - `Change Summary`
 - `Risk Areas`
@@ -71,21 +72,9 @@ python3 scripts/run_advisor_review.py \
 
 When one advisory pass must intentionally cover multiple projects, repeat `--project-root` for each target project root. The runner resolves them inside the current Codex workspace, switches the advisor CLI's `cwd` to their common ancestor inside that workspace, passes the other existing project roots through provider-specific mechanisms when supported, and lists each project explicitly in the prompt with a project-scope key.
 
-The wrapper defaults to Antigravity CLI. Select a provider with `CODEX_ADVISOR_PROVIDER=agy|grok`, `--provider agy|grok`, or `"provider": "agy"` in `~/.codex/advisor_cli.json`.
-
-Antigravity launches with the configured prompt mode and model. Default is interactive prompt mode, `agy -i "<prompt>"`, with `--model "Gemini 3.8 Flash (High)"` when supported. Set `CODEX_AGY_MODE=print` or `"mode": "print"` in `~/.codex/agy_cli.json` to use `agy -p "<prompt>"`. Override the model with `CODEX_AGY_MODEL` or config `"model"`; supported values are `Gemini 3.8 Flash (High)`, `Gemini 3.7 Flash (High)`, `Gemini 3.5 Flash (High)`, `Gemini 3.1 Pro (High)`, `Claude Sonnet 4.6 (Thinking)`, and `Claude Opus 4.6 (Thinking)`. If `agy` is not on `PATH`, set `CODEX_AGY_CMD` or the config file's `"command"` to the CLI path, for example `~/.local/bin/agy`.
-
-Grok launches through `grok --prompt-file ... --output-format streaming-json` with `--permission-mode bypassPermissions` by default. Configure it with `~/.codex/grok_cli.json` or environment variables such as `CODEX_GROK_CMD`, `CODEX_GROK_CONFIG`, `CODEX_GROK_MODEL`, `CODEX_GROK_EFFORT`, and `CODEX_GROK_PERMISSION_MODE`.
-
-If `agy` reports `E... not logged into Antigravity`, the wrapper prints the matching `W...` and `E...` log lines and relaunches `agy` up to 5 times by default. If the skill command still exits with a login failure after those internal retries, rerun the same command with the same brief and context files until reaching 10 total skill-command attempts before treating the advisor as unavailable.
-
-This skill has been smoke-tested with Antigravity CLI `agy` version `1.1.13`. After upgrading `agy`, re-run the tests and a small advisory smoke test because flags, log wording, or transcript layout may change.
-
-Gemini CLI advisory skills have been removed from the Codex runtime because Gemini CLI is no longer supported. Migrate any old `$gemini-review` workflow to `$advisor-review`.
-
-`--context-file` paths are priority starting hints only. The selected advisor runs from the selected workspace root and may inspect any other workspace-local files or directories it decides are relevant.
-
-Out-of-workspace `--context-file` paths are skipped rather than copied into the workspace for the advisor to inspect.
+Use the [shared runtime guide](../shared/references/advisor-runtime.md) when
+running the advisor. It defines provider configuration, bounded retries, timeout,
+and inspection scope once for all advisor skills.
 
 ## Read The Output Correctly
 
@@ -102,7 +91,7 @@ Out-of-workspace `--context-file` paths are skipped rather than copied into the 
 ## Guardrails
 
 - Do not ask the advisor to edit files or output patches.
-- Do not use this skill before code exists; use a design checkpoint instead if the task is still architectural.
+- Use the design checkpoint for a new architectural decision; review existing designs or prompts here when the user requests an audit.
 - Keep the review bounded and concise; one pass is usually enough.
 - Prefer changed-file and directory paths over huge prompt bodies. Add excerpts only when path-based inspection would miss important context.
 - Prefer concrete simplification opportunities over vague style commentary. Only call out removable code or complexity when the reasoning is specific and safe.
