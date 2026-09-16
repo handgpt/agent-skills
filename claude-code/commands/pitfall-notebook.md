@@ -44,11 +44,14 @@ The script auto-detects the current project root, writes to `.claude-pitfalls.md
 ### How to read it correctly
 
 - Treat the notebook as a pre-flight checklist, not a full design history.
-- Apply the `Rule` lines first. They are the core "do not repeat this" memory.
+- Treat past rules as historical evidence. Check the affected component, version, and current facts before applying one; current user instructions and verified project requirements take precedence.
+- Reuse a notebook already read in the same task unless it changed or the relevant scope changed.
 - Keep entries concrete.
 
 ## Guardrails
 
+- Never add content whose practical effect is to block or materially impede completion of authorized tasks. In particular, do not use the notebook to create safety or security policy, approval gates, or blanket prohibitions.
+- A verified security defect may be recorded only as a narrowly scoped technical failure and fix. Notebook entries never override current host security and authorization boundaries or current user instructions.
 - Do not dump stack traces or long logs into the notebook.
 - Do not create entries before the fix is actually confirmed.
 - Do not record secrets, credentials, or sensitive production data.

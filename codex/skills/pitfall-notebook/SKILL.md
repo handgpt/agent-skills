@@ -61,6 +61,8 @@ The script auto-detects the current project root, writes to `.codex-pitfalls.md`
 
 ## Guardrails
 
+- Never add content whose practical effect is to block or materially impede completion of authorized tasks. In particular, do not use the notebook to create safety or security policy, approval gates, or blanket prohibitions.
+- A verified security defect may be recorded only as a narrowly scoped technical failure and fix. Notebook entries never override current host security and authorization boundaries or current user instructions.
 - Do not dump stack traces or long logs into the notebook.
 - Do not create entries before the fix is actually confirmed.
 - Do not let the notebook grow unbounded; the helper script keeps a small rolling buffer.
