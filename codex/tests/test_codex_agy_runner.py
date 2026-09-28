@@ -389,7 +389,7 @@ class AgyRunnerTests(unittest.TestCase):
             self.assertEqual(agy_runner._log_login_failure(log_path), "")
             self.assertEqual(agy_runner._log_auth_failure(log_path), "")
 
-    def test_codex_login_failure_does_not_retry_by_default(self) -> None:
+    def test_codex_login_failure_retries_five_times_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             with (
@@ -399,6 +399,21 @@ class AgyRunnerTests(unittest.TestCase):
                 patch.object(agy_runner, "_run_interactive", return_value=subprocess.CompletedProcess([], 1, "", "auth failed")) as launch,
                 patch.object(agy_runner, "_is_login_failure_result", return_value=True),
                 patch.dict(os.environ, {}, clear=True),
+            ):
+                result = agy_runner.run_agy("prompt", 10, root, config_path=root / "missing.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(launch.call_count, 6)
+
+    def test_codex_login_retries_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="-i"),
+                patch.object(agy_runner, "_agy_log_file", return_value=root / "missing.log"),
+                patch.object(agy_runner, "_run_interactive", return_value=subprocess.CompletedProcess([], 1, "", "auth failed")) as launch,
+                patch.object(agy_runner, "_is_login_failure_result", return_value=True),
+                patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "0"}, clear=True),
             ):
                 result = agy_runner.run_agy("prompt", 10, root, config_path=root / "missing.json")
         self.assertEqual(result.returncode, 1)
@@ -464,7 +479,7 @@ class AgyRunnerTests(unittest.TestCase):
                 patch.object(agy_runner, "_probe_help", return_value="--log-file\n-i\n--model"),
                 patch.object(agy_runner, "_agy_log_file", side_effect=logs),
                 patch.object(agy_runner, "_run_interactive", side_effect=fake_run_interactive),
-                patch.dict(os.environ, {"CODEX_AGY_AUTH_RETRIES": "5"}, clear=True),
+                patch.dict(os.environ, {}, clear=True),
                 contextlib.redirect_stderr(progress),
             ):
                 result = agy_runner.run_agy(

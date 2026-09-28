@@ -75,7 +75,7 @@ Antigravity options in `$CODEX_HOME/agy_cli.json`:
 {
   "mode": "interactive",
   "command": "agy",
-  "auth_retries": 0
+  "auth_retries": 5
 }
 ```
 
@@ -85,9 +85,10 @@ Environment overrides: `CODEX_AGY_MODE`, `CODEX_AGY_CMD`, `CODEX_AGY_CONFIG`,
 `CODEX_AGY_MODEL`, `CODEX_AGY_PRINT_TIMEOUT`, `CODEX_AGY_AUTH_RETRIES`, and
 `CODEX_AGY_DANGEROUSLY_SKIP_PERMISSIONS`. Existing permission settings are preserved.
 
-Codex no longer assumes a login error is transient: auth retries default to zero.
-An explicit retry override is retained for environments with demonstrated transient
-login failures. All retries share one execution deadline, normally 1200 seconds;
+When agy reports `not logged into Antigravity`, the runner automatically
+relaunches it up to 5 times by default. Set `auth_retries` or
+`CODEX_AGY_AUTH_RETRIES` to change the retry count, including `0` to disable it.
+All retries share one execution deadline, normally 1200 seconds;
 short bounded process cleanup may follow. Help probing is separately bounded to
 15 seconds and deducted from that budget. A custom print timeout cannot extend
 the wrapper's execution budget. Never add an outer loop of wrapper invocations.

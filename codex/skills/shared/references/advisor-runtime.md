@@ -29,10 +29,10 @@ wrapper arguments and the source repository's Codex README for provider options.
 
 - The runner owns retries. Never multiply attempts by repeatedly executing the
   same failed wrapper command without new evidence or an external-state change.
-- Codex defaults to zero authentication retries. A confirmed login failure needs
-  restored authentication, not repeated launches. `CODEX_AGY_AUTH_RETRIES` or
-  config `auth_retries` is an opt-in compatibility override for environments with
-  demonstrated transient login failures; all attempts share one execution budget.
+- On `not logged into Antigravity`, the runner relaunches agy up to 5 times by
+  default. `CODEX_AGY_AUTH_RETRIES` or config `auth_retries` changes the count;
+  `0` disables retries. All attempts share one execution budget. A persistent
+  failure after those attempts still requires authentication to be restored.
 - Correct an invalid argument or missing brief locally before retrying. Do not
   treat configuration mistakes as successful or unavailable reviews.
 - Rate limits, unavailable providers, and timeouts do not imply findings. Report

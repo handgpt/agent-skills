@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - platform dependent
 
 DEFAULT_TIMEOUT_SECONDS = 1200
 DEFAULT_AGY_MODEL = "Gemini 3.8 Flash (High)"
-DEFAULT_AGY_AUTH_RETRIES = 0
+DEFAULT_AGY_AUTH_RETRIES = 5
 SUPPORTED_AGY_MODELS = (
     "Gemini 3.8 Flash (High)",
     "Gemini 3.7 Flash (High)",
@@ -98,7 +98,7 @@ class AgyPlatformConfig:
     default_mode: str
     default_config_path: str
     enable_output_file: bool = False
-    default_auth_retries: int = 0
+    default_auth_retries: int = DEFAULT_AGY_AUTH_RETRIES
 
 
 CODEX_AGY_PLATFORM = AgyPlatformConfig(
