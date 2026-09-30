@@ -67,6 +67,7 @@ AUTH_FAILURE_MARKERS = (
 AUTH_SUCCESS_MARKERS = (
     "auth succeeded",
     "oauth auth successfully",
+    "oauth: authenticated successfully",
     "auth done received",
     "created conversation",
     "streaming conversation",
@@ -521,7 +522,16 @@ def _log_warning_error_lines(
     lines = _read_log_lines(log_path)
     if not lines:
         return ""
-    matched = [line.strip() for line in lines if WARNING_ERROR_LOG_PATTERN.search(line)]
+    success_index = _latest_marker_index(lines, AUTH_SUCCESS_MARKERS)
+    matched = [
+        line.strip()
+        for index, line in enumerate(lines)
+        if WARNING_ERROR_LOG_PATTERN.search(line)
+        and not (
+            index < success_index
+            and any(marker in line.lower() for marker in AUTH_FAILURE_MARKERS)
+        )
+    ]
     if limit > 0:
         matched = matched[-limit:]
     return "\n".join(matched)[-MAX_OUTPUT_CHARS:].strip()
@@ -563,14 +573,8 @@ def _is_login_failure_result(result: subprocess.CompletedProcess[str], log_path:
     return "not logged into antigravity" in diagnostics.lower()
 
 
-def _emit_auth_retry_progress(log_path: Path | None, retry_index: int, retry_limit: int) -> None:
-    log_text = _log_warning_error_lines(log_path, limit=MAX_AUTH_RETRY_LOG_LINES)
-    for line in log_text.splitlines():
-        _emit_progress("[Antigravity log]", line)
-    _emit_progress(
-        "[Antigravity auth]",
-        f"not logged into Antigravity; relaunching ({retry_index}/{retry_limit})",
-    )
+def _emit_auth_retry_progress(retry_index: int, retry_limit: int) -> None:
+    _emit_progress("[Antigravity auth]", f"retry in progress ({retry_index}/{retry_limit})")
 
 
 def _log_terminal_failure(log_path: Path | None) -> str:
@@ -1539,10 +1543,7 @@ def run_agy(
             )
         last_result = result
 
-        if _is_login_failure_result(result, log_path) and attempt_index < auth_retries:
-            _emit_auth_retry_progress(log_path, attempt_index + 1, auth_retries)
-            continue
-
+        validation_error = ""
         if result.returncode == 0:
             normalized_stdout = (
                 output_normalizer(result.stdout)
@@ -1550,15 +1551,13 @@ def run_agy(
                 else result.stdout.strip()
             )
             validation_error = output_validator(normalized_stdout) if output_validator else ""
-            if validation_error:
-                return subprocess.CompletedProcess(
-                    command,
-                    1,
-                    "",
-                    validation_error,
-                )
-            if normalized_stdout:
+            if normalized_stdout and not validation_error:
                 return subprocess.CompletedProcess(command, 0, normalized_stdout, result.stderr)
+        if _is_login_failure_result(result, log_path) and attempt_index < auth_retries:
+            _emit_auth_retry_progress(attempt_index + 1, auth_retries)
+            continue
+        if result.returncode == 0 and validation_error:
+            return subprocess.CompletedProcess(command, 1, "", validation_error)
         return result
 
     assert last_result is not None

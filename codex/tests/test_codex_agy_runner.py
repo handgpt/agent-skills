@@ -378,16 +378,17 @@ class AgyRunnerTests(unittest.TestCase):
                 "E0611 01:27:23.383676 log.go:398] "
                 "error getting token source: You are not logged into Antigravity.\n"
                 "I0611 01:27:24.907829 server_oauth.go:216] "
-                "OAuth auth successfully as ixener@example.com\n"
-                "E0611 01:27:25.383676 log.go:398] "
-                "error getting token source: You are not logged into Antigravity.\n"
-                "I0611 01:27:26.310252 server.go:753] "
-                "Created conversation 11111111-1111-1111-1111-111111111111\n",
+                "OAuth: authenticated successfully as user@example.com\n"
+                "W0611 01:27:25.383676 log.go:398] unrelated warning\n",
                 encoding="utf-8",
             )
 
             self.assertEqual(agy_runner._log_login_failure(log_path), "")
             self.assertEqual(agy_runner._log_auth_failure(log_path), "")
+            self.assertEqual(
+                agy_runner._log_warning_error_lines(log_path),
+                "W0611 01:27:25.383676 log.go:398] unrelated warning",
+            )
 
     def test_codex_login_failure_retries_five_times_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -493,9 +494,10 @@ class AgyRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "final advisory")
         self.assertEqual(len(calls), 2)
-        self.assertIn("W0611", progress.getvalue())
-        self.assertIn("E0611", progress.getvalue())
-        self.assertIn("relaunching (1/5)", progress.getvalue())
+        self.assertNotIn("W0611", progress.getvalue())
+        self.assertNotIn("E0611", progress.getvalue())
+        self.assertNotIn("not logged into Antigravity", progress.getvalue())
+        self.assertIn("retry in progress (1/5)", progress.getvalue())
 
     def test_run_agy_does_not_retry_recovered_auth_log_noise(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -536,6 +538,35 @@ class AgyRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "final advisory")
         self.assertEqual(len(calls), 1)
+
+    def test_run_agy_keeps_valid_result_despite_stale_login_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            log_path = root / "agy.log"
+
+            def fake_run_interactive(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                log_path.write_text(
+                    "E0611 01:27:23.383676 log.go:398] "
+                    "error getting token source: You are not logged into Antigravity.\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, "final advisory", "")
+
+            with (
+                patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
+                patch.object(agy_runner, "_probe_help", return_value="--log-file\n-i\n--model"),
+                patch.object(agy_runner, "_agy_log_file", return_value=log_path),
+                patch.object(agy_runner, "_run_interactive", side_effect=fake_run_interactive) as launch,
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                result = agy_runner.run_agy(
+                    "prompt", 10, root, config_path=root / "missing-agy-config.json",
+                    output_validator=lambda text: "" if text == "final advisory" else "invalid",
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "final advisory")
+        self.assertEqual(launch.call_count, 1)
 
     def test_latest_model_text_reads_last_done_model_record(self) -> None:
         records = [
