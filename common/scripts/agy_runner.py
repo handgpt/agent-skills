@@ -2,6 +2,7 @@
 """Shared Antigravity CLI advisory runner used by agent advisory skills."""
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -87,7 +88,8 @@ TERMINAL_LOG_FAILURE_MARKERS = (
 )
 WARNING_ERROR_LOG_PATTERN = re.compile(r"^\s*[WE]\d{4}\b")
 ERROR_LOG_PATTERN = re.compile(r"^\s*E\d{4}\b")
-TASK_FINISHED_PATTERN = re.compile(r'Task id "[^"]+/task-(\d+)" finished')
+TASK_FINISHED_PATTERN = re.compile(r'Task id "[^"]+/task-(\d+)" (?:finished|was cancel(?:led|ed))\b')
+TASK_CANCELLED_PATTERN = re.compile(r'^Task "[^"\n]+/task-(\d+)" cancel(?:led|ed)\.[ \t]*\r?$', re.MULTILINE)
 _PROGRESS_STREAM = None
 
 
@@ -727,6 +729,12 @@ def _has_running_records(records: list[dict[str, Any]]) -> bool:
             and str(record.get("type", "")).strip() == "SYSTEM_MESSAGE"
         ):
             finished_background_steps.update(TASK_FINISHED_PATTERN.findall(str(record.get("content") or "")))
+        if (
+            str(record.get("source", "")).strip() == "MODEL"
+            and str(record.get("type", "")).strip() == "GENERIC"
+            and str(record.get("status", "")).strip() == "DONE"
+        ):
+            finished_background_steps.update(TASK_CANCELLED_PATTERN.findall(str(record.get("content") or "")))
         step_index = record.get("step_index")
         if step_index is None:
             continue
@@ -848,6 +856,10 @@ def _build_command(
         args.extend(["--log-file", log_file])
 
     if mode == "print":
+        if "--output-format" not in help_text:
+            raise ValueError("Antigravity print mode requires --output-format stream-json; upgrade agy.")
+        args = _drop_value_flags(args, {"--output-format"})
+        args.extend(["--output-format", "stream-json"])
         if "--print-timeout" in help_text:
             if print_timeout and not _has_flag(args, "--print-timeout"):
                 args.extend(["--print-timeout", print_timeout])
@@ -856,7 +868,7 @@ def _build_command(
         if not _has_flag(args, "--print", "-p", "--prompt"):
             args.append("-p")
     else:
-        args = _drop_value_flags(args, {"--print-timeout"})
+        args = _drop_value_flags(args, {"--print-timeout", "--output-format"})
         if not _has_flag(args, "--prompt-interactive", "-i"):
             args.append("-i")
     args.append(_safe_prompt_argument(prompt))
@@ -869,15 +881,29 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
             return
     except Exception:
         pass
+    process_group = False
     try:
-        process.terminate()
+        process_group = os.name == "posix" and os.getpgid(process.pid) == process.pid
+    except (AttributeError, OSError):
+        pass
+    try:
+        if process_group:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                process.terminate()
+        else:
+            process.terminate()
     except Exception:
         pass
     try:
         process.wait(timeout=AGY_SHUTDOWN_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         try:
-            process.kill()
+            if process_group:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
         except Exception:
             pass
         try:
@@ -893,6 +919,26 @@ def _read_text_file(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return ""
+
+
+def _consume_print_event(line: str, state: dict[str, Any]) -> None:
+    if not line.strip():
+        return
+    try:
+        event = json.loads(line)
+    except ValueError:
+        state.setdefault("errors", []).append("Invalid Antigravity stream-json event")
+        return
+    if not isinstance(event, dict):
+        state.setdefault("errors", []).append("Invalid Antigravity stream-json event")
+        return
+    if event.get("event") == "init":
+        state["conversation_id"] = str(event.get("conversation_id") or "")
+    elif event.get("event") == "result":
+        if "result" in state:
+            state.setdefault("errors", []).append("Multiple Antigravity terminal results for one prompt")
+        result = event.get("result")
+        state["result"] = result if isinstance(result, dict) else {}
 
 
 def _launch_interactive(
@@ -1064,10 +1110,15 @@ def _run_print(
     _emit_progress("[Antigravity log]", log_path)
 
     process: subprocess.Popen[str] | None = None
+    stream: dict[str, Any] = {}
+    pending = ""
+    terminal_at: float | None = None
+    terminated_after_result = False
     try:
         with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
             "w", encoding="utf-8"
-        ) as stderr_handle:
+        ) as stderr_handle, stdout_path.open("rb") as reader:
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
             process = subprocess.Popen(
                 args,
                 text=True,
@@ -1075,11 +1126,31 @@ def _run_print(
                 env=env,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
+                start_new_session=os.name == "posix",
             )
 
             while process.poll() is None:
+                pending += decoder.decode(reader.read())
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    _consume_print_event(line, stream)
+                if "result" in stream:
+                    if terminal_at is None:
+                        terminal_at = time.monotonic()
+                        _emit_progress("[Antigravity result]", "terminal result received; waiting for CLI shutdown")
+                    shutdown_deadline = min(
+                        terminal_at + AGY_SHUTDOWN_GRACE_SECONDS,
+                        start_monotonic + timeout_seconds,
+                    )
+                    if time.monotonic() >= shutdown_deadline:
+                        terminated_after_result = process.poll() is None
+                        _emit_progress("[Antigravity exit]", "closing CLI after terminal result")
+                        _terminate_process(process)
+                        break
+                    time.sleep(min(AGY_POLL_SECONDS, max(0, shutdown_deadline - time.monotonic())))
+                    continue
                 if not conversation_id:
-                    conversation_id = _conversation_id_from_log(log_path)
+                    conversation_id = stream.get("conversation_id") or _conversation_id_from_log(log_path)
                     if conversation_id:
                         transcript = _transcript_path(conversation_id)
                         _emit_progress("[Antigravity conversation]", conversation_id)
@@ -1152,7 +1223,7 @@ def _run_print(
                 last_wait_percent = _emit_wait_progress(
                     time.monotonic(), start_monotonic, timeout_seconds, last_wait_percent
                 )
-                if time.monotonic() - start_monotonic >= timeout_seconds:
+                if terminal_at is None and time.monotonic() - start_monotonic >= timeout_seconds:
                     _terminate_process(process)
                     stdout_handle.flush()
                     stderr_handle.flush()
@@ -1175,7 +1246,12 @@ def _run_print(
                         stderr=timeout_diagnostics,
                     )
                 time.sleep(AGY_POLL_SECONDS)
-            returncode = process.wait()
+            returncode = process.poll()
+            if returncode is None:
+                returncode = 1
+            pending += decoder.decode(reader.read(), final=True)
+            for line in pending.splitlines():
+                _consume_print_event(line, stream)
 
             stdout_handle.flush()
             stderr_handle.flush()
@@ -1188,39 +1264,21 @@ def _run_print(
             records = _load_transcript(transcript)
             _emit_transcript_progress(records, seen_steps)
 
-        stdout_text = _read_text_file(stdout_path)
         stderr_text = _read_text_file(stderr_path)
 
-        transcript_text = _latest_run_model_text(
-            records,
-            prompt_text,
-            start_epoch,
-            _path_mtime_epoch(transcript),
-            transcript_start_index,
-        )
+        terminal = stream.get("result") or {}
+        response = terminal.get("response")
+        text = response.strip() if isinstance(response, str) else ""
+        protocol_errors = stream.get("errors", [])
+        success = terminal.get("status") == "SUCCESS" and bool(text) and not protocol_errors
+        if terminated_after_result and success:
+            returncode = 0
+        if not success:
+            returncode = returncode or 1
+            protocol_errors.append(str(terminal.get("error") or "Missing or invalid Antigravity terminal SUCCESS result"))
         terminal_failure_text = _log_terminal_failure(log_path)
         auth_failure_text = _log_auth_failure(log_path) if not conversation_id else ""
         log_warning_error_text = _format_log_warning_error_diagnostics(log_path)
-        combined_diagnostics = "\n".join(
-            part
-            for part in (
-                stdout_text,
-                stderr_text,
-                terminal_failure_text,
-                auth_failure_text,
-            )
-            if part
-        )
-        effective_returncode = returncode or (
-            1 if terminal_failure_text or _is_auth_failure(combined_diagnostics, conversation_id, records) else 0
-        )
-        text = (
-            stdout_text.strip()
-            or transcript_text
-            or stderr_text.strip()
-            or terminal_failure_text.strip()
-            or auth_failure_text.strip()
-        )
         stderr = "\n".join(
             part
             for part in (
@@ -1228,10 +1286,11 @@ def _run_print(
                 terminal_failure_text.strip(),
                 auth_failure_text.strip(),
                 log_warning_error_text,
+                *protocol_errors,
             )
             if part
         )
-        return subprocess.CompletedProcess(args, effective_returncode, text, stderr)
+        return subprocess.CompletedProcess(args, returncode, text, stderr)
     finally:
         if process is not None and process.poll() is None:
             _terminate_process(process)

@@ -76,6 +76,7 @@ class AgyRunnerTests(unittest.TestCase):
                     "--model",
                     "--print",
                     "--print-timeout",
+                    "--output-format",
                 ]
             )
             command = agy_runner._build_command(
@@ -249,6 +250,33 @@ class AgyRunnerTests(unittest.TestCase):
         finally:
             agy_runner.configure_platform(agy_runner.CODEX_AGY_PLATFORM)
 
+    def test_run_print_closes_after_terminal_success_when_cli_stays_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            fake_agy = root / "fake_agy.py"
+            fake_agy.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, time\n"
+                "print(json.dumps({'event': 'result', 'result': "
+                "{'status': 'SUCCESS', 'response': 'final answer'}}), flush=True)\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            fake_agy.chmod(0o755)
+            start = time.monotonic()
+            with (
+                patch.object(agy_runner, "AGY_SHUTDOWN_GRACE_SECONDS", 0.1),
+                patch.object(agy_runner, "AGY_POLL_SECONDS", 0.02),
+            ):
+                result = agy_runner._run_print(
+                    [str(fake_agy), "--log-file", str(root / "agy.log"), "-p", "prompt"],
+                    cwd=root, env=os.environ.copy(), timeout_seconds=5,
+                    start_dt=datetime.now(), start_epoch=time.time(), prompt_text="prompt",
+                )
+            self.assertLess(time.monotonic() - start, 3)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "final answer")
+
     def test_run_print_returns_terminal_log_failure_after_conversation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -259,6 +287,7 @@ class AgyRunnerTests(unittest.TestCase):
                     #!/usr/bin/env python3
                     import pathlib
                     import sys
+                    import json
 
                     args = sys.argv[1:]
                     log_path = pathlib.Path(args[args.index("--log-file") + 1])
@@ -267,6 +296,9 @@ class AgyRunnerTests(unittest.TestCase):
                         "agent executor error: RESOURCE_EXHAUSTED: Individual quota reached\\n",
                         encoding="utf-8",
                     )
+                    print(json.dumps({"event": "result", "result": {
+                        "status": "ERROR", "response": "partial answer", "error": "RESOURCE_EXHAUSTED"
+                    }}), flush=True)
                     """
                 ),
                 encoding="utf-8",
@@ -425,7 +457,7 @@ class AgyRunnerTests(unittest.TestCase):
             root = Path(tmp_dir)
             with (
                 patch.object(agy_runner, "_resolve_executable", return_value="/usr/local/bin/agy"),
-                patch.object(agy_runner, "_probe_help", return_value="--print-timeout"),
+                patch.object(agy_runner, "_probe_help", return_value="--print-timeout\n--output-format"),
                 patch.object(agy_runner, "_agy_log_file", return_value=root / "missing.log"),
                 patch.object(agy_runner, "_run_print", side_effect=[subprocess.CompletedProcess([], 1, "", "auth failed"), subprocess.CompletedProcess([], 0, "review", "")]) as launch,
                 patch.object(agy_runner, "_is_login_failure_result", side_effect=[True, False]),
@@ -615,6 +647,27 @@ class AgyRunnerTests(unittest.TestCase):
             {"step_index": 20, "source": "MODEL", "status": "DONE", "content": "final review"},
         ]
 
+        self.assertEqual(agy_runner._latest_model_text(records), "final review")
+
+    def test_latest_model_text_accepts_final_after_background_task_cancelled(self) -> None:
+        records = [
+            {"step_index": 20, "source": "MODEL", "type": "GENERIC", "status": "RUNNING"},
+            {
+                "step_index": 26, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+                "content": 'Created At: 2026-10-24T23:38:45+08:00\r\nTask "conversation/task-20" cancelled. \r\n',
+            },
+            {
+                "step_index": 27, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "content": "final review",
+            },
+        ]
+        self.assertFalse(agy_runner._has_running_records(records))
+        self.assertEqual(agy_runner._latest_model_text(records), "final review")
+        records[1].update(
+            source="SYSTEM", type="SYSTEM_MESSAGE",
+            content='Task id "conversation/task-20" was canceled with result: cancelled',
+        )
+        self.assertFalse(agy_runner._has_running_records(records))
         self.assertEqual(agy_runner._latest_model_text(records), "final review")
 
     def test_latest_run_model_text_ignores_tool_planner_records(self) -> None:

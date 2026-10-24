@@ -88,7 +88,7 @@ All configuration is optional. The defaults work out of the box.
 | `CLAUDE_AGY_DANGEROUSLY_SKIP_PERMISSIONS` | `true` | Auto-approve Antigravity CLI tool permissions when supported |
 | `CLAUDE_CODEX_MODEL` | `gpt-5.4` | Codex model |
 
-The Antigravity integration has been smoke-tested with Antigravity CLI `agy` version `1.1.13`. After upgrading `agy`, re-run the local tests and both print and interactive advisory smoke tests because prompt-mode flags, log wording, or transcript layout may change. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD=~/.local/bin/agy` or put `"command": "~/.local/bin/agy"` in `~/.claude/agy_cli.json`.
+Print mode requires `agy --output-format stream-json` support. The runner consumes the terminal result and bounds shutdown even when the CLI remains alive. After upgrading `agy`, re-run the local tests and both print and interactive advisory smoke tests because prompt-mode flags, log wording, or transcript layout may change. If `agy` is not on `PATH`, set `CLAUDE_AGY_CMD=~/.local/bin/agy` or put `"command": "~/.local/bin/agy"` in `~/.claude/agy_cli.json`.
 
 ## Directory Structure
 

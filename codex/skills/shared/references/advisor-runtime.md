@@ -19,6 +19,9 @@ Antigravity (`agy`) is the default. Use `--provider agy|grok`,
 
 Provider options belong in `$CODEX_HOME/agy_cli.json` or `grok_cli.json`.
 Antigravity defaults to interactive `agy -i`; `CODEX_AGY_MODE=print` selects `agy -p`.
+Print mode requires CLI support for `--output-format stream-json`. The runner uses
+the terminal result event, then bounds CLI shutdown; a completed result does not
+wait for the entire execution timeout just because the CLI stays alive.
 Use `CODEX_AGY_CMD` / `CODEX_AGY_MODEL` or config `command` / `model` to override.
 The runner maintains supported model names and validates them; do not copy the
 model list into every skill. Grok uses `grok --prompt-file` with streaming JSON;

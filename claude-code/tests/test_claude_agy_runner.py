@@ -68,6 +68,7 @@ class ClaudeAgyRunnerTests(unittest.TestCase):
                     "--model",
                     "--print",
                     "--print-timeout",
+                    "--output-format",
                 ]
             )
 
